@@ -43,7 +43,6 @@ class ConfigManager:
 
     def get_model_config(self, name):
         primary = self.resolve_primary_name(name)
-        # 简单遍历查找，因为 key 不一定是 primary name
         for key, cfg in self.config.items():
             if key == "program": continue
             if cfg.get("aliases", []) and cfg["aliases"][0] == primary:
@@ -71,10 +70,43 @@ class ConfigManager:
                         if k not in ["aliases", "mode", "port", "auto_start"]:
                             del run_cfg[k]
                     
-                    run_cfg.update(val)
-                    run_cfg["config_source"] = key
+                    # 更新特定硬件的配置 (key path change)
+                    run_cfg.update({
+                        "script_path": val["script_path"], # 修改点
+                        "memory_mb": val["memory_mb"],
+                        "required_devices": val.get("required_devices", []),
+                        "config_source": key
+                    })
                     return run_cfg
         return None
+
+    def validate_config(self) -> List[str]:
+        """验证配置文件的有效性"""
+        errors = []
+        try:
+            # 检查模型配置
+            for key, model_cfg in self.config.items():
+                if key == "program": continue
+
+                # 检查必需的设备配置项 (修改点)
+                has_device_config = False
+                for cfg_key in model_cfg.keys():
+                    if cfg_key not in ["aliases", "mode", "port", "auto_start"]:
+                        device_config = model_cfg[cfg_key]
+                        if isinstance(device_config, dict):
+                            has_device_config = True
+                            # bat_path -> script_path
+                            required_device_keys = ['required_devices', 'script_path', 'memory_mb']
+                            for req_key in required_device_keys:
+                                if req_key not in device_config:
+                                    errors.append(f"模型 '{key}' 的设备配置 '{cfg_key}' 缺少必需项: {req_key}")
+                
+                if not has_device_config:
+                    errors.append(f"模型 '{key}' 没有有效的设备配置")
+
+        except Exception as e:
+            errors.append(f"配置验证失败: {str(e)}")
+        return errors
 
     # --- Getters ---
     def get_openai_config(self):
