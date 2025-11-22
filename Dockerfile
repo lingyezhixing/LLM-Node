@@ -2,12 +2,16 @@
 FROM python:3.12-slim
 
 # 设置环境变量
-# 防止 Python 生成 .pyc 文件
 ENV PYTHONDONTWRITEBYTECODE=1
-# 确保日志直接输出到控制台
 ENV PYTHONUNBUFFERED=1
 
-# 安装基础系统工具 (psutil 等库可能需要 procps, curl 用于调试)
+# ---------------------------------------------------------
+# [加速配置] 替换 APT 源为阿里云镜像 (Debian 12 Bookworm)
+# ---------------------------------------------------------
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
+# 安装基础系统工具
 RUN apt-get update && apt-get install -y \
     procps \
     curl \
@@ -16,14 +20,15 @@ RUN apt-get update && apt-get install -y \
 # 设置工作目录
 WORKDIR /app
 
-# 1. 仅复制依赖文件 (利用 Docker 缓存层)
+# 1. 仅复制依赖文件
 COPY requirements.txt .
 
-# 2. 安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt
+# ---------------------------------------------------------
+# [加速配置] 使用阿里云 PyPI 镜像源安装依赖
+# ---------------------------------------------------------
+RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
-# 3. 创建启动脚本 (Entrypoint)
-# 因为代码是挂载进来的，必须在运行时修改权限，而不是构建时
+# 3. 创建启动脚本 (Entrypoint) - 处理权限
 RUN echo '#!/bin/bash\n\
 # 检查脚本目录是否存在\n\
 if [ -d "Model_startup_script" ]; then\n\
@@ -31,7 +36,7 @@ if [ -d "Model_startup_script" ]; then\n\
     find Model_startup_script -name "*.sh" -exec chmod +x {} \;\n\
 fi\n\
 \n\
-# 执行传入的命令 (即 CMD)\n\
+# 执行传入的命令\n\
 exec "$@"' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
 # 设置入口点

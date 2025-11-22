@@ -1,9 +1,6 @@
 # 核心依赖
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
-gradio>=4.0.0
-pystray>=0.19.0
-Pillow>=10.0.0
 
 # HTTP客户端
 httpx>=0.25.0
@@ -12,16 +9,3 @@ openai>=1.0.0
 # 系统监控
 psutil>=5.9.0
 GPUtil>=1.4.0
-
-# 配置和日志
-pydantic>=2.0.0
-
-# Web框架
-python-multipart>=0.0.6
-
-# 数据分析和可视化
-chart.js>=4.4.0
-
-# 其他
-python-dotenv>=1.0.0
-requests>=2.31.0
