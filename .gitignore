@@ -104,4 +104,4 @@ QUICK_STATS_README.md
 
 # 忽略AI上下文生成器
 generate_ai_context.py
-ai_context.md
+node_context.md
