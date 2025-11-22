@@ -1,7 +1,6 @@
 """
-统一的进程管理器
-提供简单但完整的进程管理功能，包括启动、追踪和关闭进程
-修复：解决进程列表为空时 cleanup 方法因未设置事件而死锁超时的问题
+统一的进程管理器 (Windows/Linux 兼容版)
+提供进程启动、追踪、输出捕获和跨平台终止功能
 """
 
 import subprocess
@@ -9,6 +8,7 @@ import time
 import threading
 import psutil
 import concurrent.futures
+import os
 from typing import Dict, Optional, Tuple, List, Any, Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -44,7 +44,7 @@ class ProcessInfo:
 
 
 class ProcessManager:
-    """优化的统一进程管理器 - 支持并行操作和快速终止"""
+    """跨平台统一进程管理器"""
 
     def __init__(self):
         """初始化进程管理器"""
@@ -60,7 +60,7 @@ class ProcessManager:
         self.monitor_thread = threading.Thread(target=self._monitor_processes, daemon=True)
         self.monitor_thread.start()
 
-        logger.info("进程管理器初始化完成")
+        logger.info(f"进程管理器初始化完成 (OS: {os.name})")
 
     def start_process(
         self,
@@ -74,20 +74,7 @@ class ProcessManager:
         output_callback: Optional[Callable[[str, str], None]] = None
     ) -> Tuple[bool, str, Optional[int]]:
         """
-        启动进程
-
-        Args:
-            name: 进程名称（唯一标识）
-            command: 启动命令
-            cwd: 工作目录
-            description: 进程描述
-            shell: 是否使用shell
-            creation_flags: 进程创建标志
-            capture_output: 是否捕获输出
-            output_callback: 输出回调函数 (stream_type, message)
-
-        Returns:
-            (成功状态, 消息, 进程ID)
+        启动进程 (跨平台适配)
         """
         with self.lock:
             # 检查是否已存在同名进程
@@ -124,8 +111,16 @@ class ProcessManager:
             if cwd:
                 startup_params['cwd'] = cwd
 
-            if creation_flags:
-                startup_params['creationflags'] = creation_flags
+            # --- 跨平台参数适配 ---
+            if os.name == 'nt':
+                # Windows 特定参数
+                if creation_flags:
+                    startup_params['creationflags'] = creation_flags
+            else:
+                # Linux/Unix 特定参数
+                # close_fds=True 避免子进程继承不必要的文件描述符
+                startup_params['close_fds'] = True
+            # ----------------------
 
             if capture_output:
                 startup_params.update({
@@ -183,7 +178,8 @@ class ProcessManager:
                 else:
                     break
         except Exception as e:
-            logger.debug(f"监控 {process_info.name} 的 {stream_type} 输出时出错: {e}")
+            # 进程退出时可能会触发读错误，忽略
+            pass
         finally:
             try:
                 stream.close()
@@ -198,14 +194,6 @@ class ProcessManager:
     ) -> Tuple[bool, str]:
         """
         停止进程
-
-        Args:
-            name: 进程名称
-            force: 是否强制终止
-            timeout: 等待超时时间（秒）
-
-        Returns:
-            (成功状态, 消息)
         """
         with self.lock:
             if name not in self.processes:
@@ -262,11 +250,11 @@ class ProcessManager:
             return False, f"停止进程失败: {e}"
 
     def _terminate_process(self, pid: int, timeout: int) -> bool:
-        """优化的正常终止进程"""
+        """优化的正常终止进程 (跨平台)"""
         try:
             # 尝试正常终止
             process = psutil.Process(pid)
-            process.terminate()
+            process.terminate()  # Windows: TerminateProcess, Linux: SIGTERM
 
             # 减少等待时间，提高性能
             try:
@@ -284,58 +272,76 @@ class ProcessManager:
             return False
 
     def _kill_process_tree(self, pid: int) -> bool:
-        """强制终止进程树"""
-        # 首先尝试psutil
+        """强制终止进程树 (跨平台兼容)"""
+        # 1. 首先尝试 psutil (跨平台最通用方案)
         try:
-            process = psutil.Process(pid)
-            children = process.children(recursive=True)
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
 
             # 终止子进程
             for child in children:
                 try:
-                    child.kill()
+                    child.kill() # Linux: SIGKILL
                 except Exception:
                     pass
 
             # 终止主进程
-            process.kill()
-            logger.info(f"psutil成功终止进程树: {pid}")
-            return True
+            parent.kill()
+            
+            # 简单等待确认
+            _, alive = psutil.wait_procs([parent] + children, timeout=3)
+            if not alive:
+                logger.info(f"psutil成功终止进程树: {pid}")
+                return True
 
         except (psutil.NoSuchProcess, Exception):
             pass
 
-        # 备选方案：使用taskkill
-        try:
-            result = subprocess.run(
-                ['taskkill', '/F', '/T', '/PID', str(pid)],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore',
-                timeout=3
-            )
-            return result.returncode == 0
-
-        except Exception:
-            return False
+        # 2. 备选方案：使用系统命令
+        if os.name == 'nt':
+            # Windows 使用 taskkill
+            try:
+                result = subprocess.run(
+                    ['taskkill', '/F', '/T', '/PID', str(pid)],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='ignore',
+                    timeout=3
+                )
+                return result.returncode == 0 or "没有找到" in result.stderr
+            except Exception:
+                return False
+        else:
+            # Linux 使用 kill -9
+            try:
+                # 尝试强制杀死主进程 (子进程可能变成孤儿进程被init回收，或者由于pgid被清理)
+                result = subprocess.run(
+                    ['kill', '-9', str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=3
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
 
     def _is_process_alive(self, pid: int) -> bool:
         """检查进程是否存活"""
         try:
             process = psutil.Process(pid)
+            if process.status() == psutil.STATUS_ZOMBIE:
+                return False
             return process.is_running()
         except psutil.NoSuchProcess:
             return False
         except Exception as e:
-            logger.warning(f"检查进程状态失败 {pid}: {e}")
             return False
 
     def _monitor_processes(self):
         """优化的进程监控状态"""
         while self.is_monitoring:
             try:
-                # 减少监控频率，提高性能
                 if self.shutdown_event.is_set():
                     break
 
@@ -343,8 +349,9 @@ class ProcessManager:
 
                 with self.lock:
                     dead_processes = []
-
-                    for name, process_info in self.processes.items():
+                    
+                    # 使用 list() 复制 keys，防止迭代时修改字典
+                    for name, process_info in list(self.processes.items()):
                         if process_info.status in [ProcessStatus.RUNNING, ProcessStatus.STARTING]:
                             # 检查进程是否存活
                             if not self._is_process_alive(process_info.pid):
@@ -423,7 +430,6 @@ class ProcessManager:
             process_names = list(self.processes.keys())
 
         if not process_names:
-            # 【修复】如果没有进程需要停止，立即设置完成信号
             self._process_cleanup_complete.set()
             return results
 

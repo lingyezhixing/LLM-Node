@@ -9,191 +9,20 @@
     "log_level": "INFO",
     "TokenTracker": ["Chat", "Base", "Embedding", "Reranker"]
   },
-  "Qwen3-Coder-30B-A3B-Instruct-UD-64K": {
-    "aliases": [
-      "Qwen3-Coder-30B-A3B-Instruct"
-    ],
-    "mode": "Chat",
-    "port": 10001,
-    "auto_start": false,
-    "RTX4060-V100": {
-      "required_devices": [
-        "rtx 4060",
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Qwen3-Coder-30B-A3B-Instruct-UD-64K.bat",
-      "memory_mb": {
-        "rtx 4060": 5120,
-        "v100": 16000
-      }
-    },
-    "RTX4060": {
-      "required_devices": [
-        "rtx 4060"
-      ],
-      "script_path": "Model_startup_script\\RTX4060\\Qwen3-Coder-30B-A3B-Instruct-64K-RTX4060.bat",
-      "memory_mb": {
-        "rtx 4060": 5120
-      }
-    }
-  },
   "bge-code-v1": {
     "aliases": [
       "bge-code-v1"
     ],
     "mode": "Embedding",
-    "port": 10002,
+    "port": 10001,
     "auto_start": false,
-    "V100-CPU": {
-      "required_devices": [
-        "v100",
-        "CPU"
-      ],
-      "script_path": "Model_startup_script\\bge-code-v1.bat",
-      "memory_mb": {
-        "v100": 0,
-        "CPU": 2048
-      }
-    },
     "CPU": {
       "required_devices": [
         "CPU"
       ],
-      "script_path": "Model_startup_script\\RTX4060\\bge-code-v1.bat",
+      "script_path": "Model_startup_script/bge-code-v1.sh",
       "memory_mb": {
         "CPU": 2048
-      }
-    }
-  },
-  "Qwen3-VL-30B-A3B-Instruct-UD-64K": {
-    "aliases": [
-      "Qwen3-VL-30B-A3B-Instruct"
-    ],
-    "mode": "Chat",
-    "port": 10003,
-    "auto_start": false,
-    "RTX4060-V100": {
-      "required_devices": [
-        "rtx 4060",
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Qwen3-VL-30B-A3B-Instruct-UD-64K.bat",
-      "memory_mb": {
-        "rtx 4060": 6144,
-        "v100": 16000
-      }
-    },
-    "RTX4060": {
-      "required_devices": [
-        "rtx 4060"
-      ],
-      "script_path": "Model_startup_script\\RTX4060\\Qwen3-VL-30B-A3B-Instruct-UD-64K-RTX4060.bat",
-      "memory_mb": {
-        "rtx 4060": 5120
-      }
-    }
-  },
-  "Qwen3-VL-30B-A3B-Thinking-UD-64K": {
-    "aliases": [
-      "Qwen3-VL-30B-A3B-Thinking"
-    ],
-    "mode": "Chat",
-    "port": 10004,
-    "auto_start": false,
-    "RTX4060-V100": {
-      "required_devices": [
-        "rtx 4060",
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Qwen3-VL-30B-A3B-Thinking-UD-64K.bat",
-      "memory_mb": {
-        "rtx 4060": 6144,
-        "v100": 16000
-      }
-    },
-    "RTX4060": {
-      "required_devices": [
-        "rtx 4060"
-      ],
-      "script_path": "Model_startup_script\\RTX4060\\Qwen3-VL-30B-A3B-Thinking-UD-64K-RTX4060.bat",
-      "memory_mb": {
-        "rtx 4060": 5120
-      }
-    }
-  },
-  "Qwen3-Next-80B-A3B-Instruct-128K": {
-    "aliases": [
-      "Qwen3-Next-80B-A3B-Instruct"
-    ],
-    "mode": "Chat",
-    "port": 10005,
-    "auto_start": false,
-    "RTX4060-V100": {
-      "required_devices": [
-        "rtx 4060",
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Qwen3-Next-80B-A3B-Instruct-128K.bat",
-      "memory_mb": {
-        "rtx 4060": 6144,
-        "v100": 16000
-      }
-    }
-  },
-  "Tifa-DeepsexV3-80K": {
-    "aliases": [
-      "Tifa-DeepsexV3",
-      "Tifa-DeepsexV3-80K",
-      "Tifa-Deepsex-roleplay",
-      "Tifa-Deepsex-unlimited"
-    ],
-    "mode": "Chat",
-    "port": 10006,
-    "auto_start": false,
-    "RTX4060-V100": {
-      "required_devices": [
-        "rtx 4060",
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Tifa-DeepsexV3-80K.bat",
-      "memory_mb": {
-        "rtx 4060": 6144,
-        "v100": 16000
-      }
-    }
-  },
-  "Qwen3-14B-AWQ-32Kx32": {
-    "aliases": [
-      "Qwen3-14B-AWQ"
-    ],
-    "mode": "Chat",
-    "port": 10007,
-    "auto_start": false,
-    "V100": {
-      "required_devices": [
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Qwen3-14B-AWQ-32Kx32.bat",
-      "memory_mb": {
-        "v100": 16000
-      }
-    }
-  },
-  "Sakura-14B-Qwen2.5-v1.0-2Kx16": {
-    "aliases": [
-      "Sakura-14B-Qwen2.5-v1.0-2Kx16",
-      "Sakura-14B-Qwen2.5-v1.0"
-    ],
-    "mode": "Chat",
-    "port": 10008,
-    "auto_start": false,
-    "V100": {
-      "required_devices": [
-        "v100"
-      ],
-      "script_path": "Model_startup_script\\Sakura-14B-Qwen2.5-v1.0-2Kx16.bat",
-      "memory_mb": {
-        "v100": 16000
       }
     }
   },
@@ -204,60 +33,13 @@
     "mode": "Embedding",
     "port": 10009,
     "auto_start": false,
-    "RTX4060-V100-CPU": {
-      "required_devices": [
-        "rtx 4060",
-        "v100",
-        "CPU"
-      ],
-      "script_path": "Model_startup_script\\Qwen3-Embedding-8B-CUDA.bat",
-      "memory_mb": {
-        "rtx 4060": 6144,
-        "v100": 0,
-        "CPU": 6144
-      }
-    },
     "CPU": {
       "required_devices": [
         "CPU"
       ],
-      "script_path": "Model_startup_script\\RTX4060\\Qwen3-Embedding-8B-CPU.bat",
+      "script_path": "Model_startup_script/Qwen3-Embedding-8B-CPU.sh",
       "memory_mb": {
         "CPU": 6144
-      }
-    }
-  },
-  "Dmeta-embedding-zh-small": {
-    "aliases": [
-      "Dmeta-embedding-zh-small"
-    ],
-    "mode": "Embedding",
-    "port": 10010,
-    "auto_start": false,
-    "RTX4060": {
-      "required_devices": [
-        "rtx 4060"
-      ],
-      "script_path": "Model_startup_script\\Dmeta-embedding-zh-small.bat",
-      "memory_mb": {
-        "rtx 4060": 300
-      }
-    }
-  },
-  "bge-reranker-v2-m3": {
-    "aliases": [
-      "bge-reranker-v2-m3"
-    ],
-    "mode": "Reranker",
-    "port": 10011,
-    "auto_start": false,
-    "RTX4060": {
-      "required_devices": [
-        "rtx 4060"
-      ],
-      "script_path": "Model_startup_script\\bge-reranker-v2-m3.bat",
-      "memory_mb": {
-        "rtx 4060": 768
       }
     }
   }

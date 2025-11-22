@@ -1,5 +1,5 @@
 """
-配置管理器 - 节点版
+配置管理器 - 节点版 (跨平台兼容)
 """
 import json
 import threading
@@ -70,9 +70,9 @@ class ConfigManager:
                         if k not in ["aliases", "mode", "port", "auto_start"]:
                             del run_cfg[k]
                     
-                    # 更新特定硬件的配置 (key path change)
+                    # 更新特定硬件的配置
                     run_cfg.update({
-                        "script_path": val["script_path"], # 修改点
+                        "script_path": val["script_path"], 
                         "memory_mb": val["memory_mb"],
                         "required_devices": val.get("required_devices", []),
                         "config_source": key
@@ -88,14 +88,13 @@ class ConfigManager:
             for key, model_cfg in self.config.items():
                 if key == "program": continue
 
-                # 检查必需的设备配置项 (修改点)
                 has_device_config = False
                 for cfg_key in model_cfg.keys():
                     if cfg_key not in ["aliases", "mode", "port", "auto_start"]:
                         device_config = model_cfg[cfg_key]
                         if isinstance(device_config, dict):
                             has_device_config = True
-                            # bat_path -> script_path
+                            # 检查必需的配置项
                             required_device_keys = ['required_devices', 'script_path', 'memory_mb']
                             for req_key in required_device_keys:
                                 if req_key not in device_config:

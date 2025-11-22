@@ -1,7 +1,6 @@
 """
 模型控制器 - 节点版 (带文件日志管理)
 负责模型的启动、停止、资源管理以及按模型分类的日志记录
-修复：资源释放后的缓存刷新竞态问题
 """
 
 import time
@@ -29,19 +28,28 @@ class LogManager:
         self.lock = threading.Lock()
 
         if not os.path.exists(self.base_log_dir):
-            os.makedirs(self.base_log_dir, exist_ok=True)
+            try:
+                os.makedirs(self.base_log_dir, exist_ok=True)
+            except Exception as e:
+                logger.error(f"创建日志目录失败: {e}")
 
     def prepare_model_log(self, model_name: str):
         with self.lock:
-            safe_name = model_name.replace(":", "_").replace("\\", "_").replace("/", "_")
+            # 跨平台安全名称替换 (替换 : \ / 为下划线)
+            safe_name = model_name.replace(":", "_").replace("\\", "_").replace("/", "_").replace(os.sep, "_")
             model_dir = os.path.join(self.base_log_dir, safe_name)
             
             if not os.path.exists(model_dir):
                 os.makedirs(model_dir, exist_ok=True)
 
             log_files = glob.glob(os.path.join(model_dir, "*.log"))
-            log_files.sort(key=os.path.getmtime)
+            # 按时间排序
+            try:
+                log_files.sort(key=os.path.getmtime)
+            except Exception:
+                pass
 
+            # 保留最新的10个
             while len(log_files) >= 10:
                 oldest_file = log_files.pop(0)
                 try:
@@ -199,6 +207,7 @@ class ModelController:
         
         logger.info(f"正在启动: {primary_name} (方案: {model_config.get('config_source')})")
         
+        # 跨平台路径处理：使用绝对路径作为 CWD
         project_root = os.path.dirname(os.path.abspath(self.config_manager.config_path))
         
         def output_callback(stream, msg):
@@ -209,7 +218,7 @@ class ModelController:
             name=f"model_{primary_name}",
             command=model_config['script_path'], 
             cwd=project_root,
-            shell=True,
+            shell=True,  # Linux 下对应 /bin/sh，Windows 下对应 cmd.exe
             capture_output=True, 
             output_callback=output_callback
         )
@@ -242,8 +251,10 @@ class ModelController:
                     resource_ok = False; break
                 
                 info = status.get('info')
-                if info and info.get('available_memory_mb', 0) < req_mb:
-                    deficit_devices[dev_name] = req_mb - info.get('available_memory_mb', 0)
+                # 如果 info 为 None，视为无数据，谨慎起见视为不足
+                available = info.get('available_memory_mb', 0) if info else 0
+                if available < req_mb:
+                    deficit_devices[dev_name] = req_mb - available
                     resource_ok = False
             
             if resource_ok: return True
@@ -253,12 +264,10 @@ class ModelController:
                 if not self._stop_idle_models_for_resources(deficit_devices):
                     break
                 
-                # 等待操作系统释放资源
                 logger.info("等待3秒让系统回收资源...")
                 time.sleep(3)
                 
-                # 【核心修复】：强制刷新插件状态缓存
-                # 避免后台监控线程延迟导致读取到旧数据
+                # 强制刷新插件状态缓存
                 if hasattr(self.plugin_manager, '_update_device_status_once'):
                     try:
                         logger.info("正在强制刷新硬件状态缓存...")
@@ -313,6 +322,7 @@ class ModelController:
             
             pid = state.get('pid')
             if pid:
+                # 停止模型时，强制标志为 True，确保清理干净
                 self.process_manager.stop_process(f"model_{primary_name}", force=True)
             
             state['pid'] = None
