@@ -31,13 +31,13 @@
       "Qwen3-Embedding-8B"
     ],
     "mode": "Embedding",
-    "port": 10009,
+    "port": 10002,
     "auto_start": false,
     "CPU": {
       "required_devices": [
         "CPU"
       ],
-      "script_path": "Model_startup_script/Qwen3-Embedding-8B-CPU.sh",
+      "script_path": "Model_startup_script/Qwen3-Embedding-8B.sh",
       "memory_mb": {
         "CPU": 6144
       }
