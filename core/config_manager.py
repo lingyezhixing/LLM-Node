@@ -1,16 +1,16 @@
 """
-配置管理器 - 节点版 (跨平台兼容)
+配置管理器 - 节点版 (纯 YAML 版)
 """
-import json
+import yaml
 import threading
 import os
-from typing import Dict, List, Optional, Any, Set
+from typing import List, Set
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 class ConfigManager:
-    def __init__(self, config_path: str = 'config.json'):
+    def __init__(self, config_path: str = 'config.yaml'):
         self.config_path = config_path
         self.config = {}
         self.alias_to_primary_name = {}
@@ -20,9 +20,15 @@ class ConfigManager:
     def load_config(self):
         with self.config_lock:
             try:
+                if not os.path.exists(self.config_path):
+                    raise FileNotFoundError(f"配置文件不存在: {self.config_path}")
+
                 with open(self.config_path, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
+                    # 使用 yaml.safe_load 解析
+                    self.config = yaml.safe_load(f) or {}
+
                 self._init_alias_mapping()
+                logger.info(f"成功加载配置: {self.config_path}")
             except Exception as e:
                 logger.error(f"加载配置失败: {e}")
                 raise
@@ -31,8 +37,13 @@ class ConfigManager:
         self.alias_to_primary_name.clear()
         for key, cfg in self.config.items():
             if key == "program": continue
-            primary = cfg.get("aliases", [key])[0]
-            for alias in cfg.get("aliases", []):
+            
+            aliases = cfg.get("aliases", [key])
+            # 确保 aliases 是列表且不为空
+            if not aliases: aliases = [key]
+            
+            primary = aliases[0]
+            for alias in aliases:
                 self.alias_to_primary_name[alias] = primary
 
     def resolve_primary_name(self, alias: str) -> str:
@@ -45,13 +56,14 @@ class ConfigManager:
         primary = self.resolve_primary_name(name)
         for key, cfg in self.config.items():
             if key == "program": continue
-            if cfg.get("aliases", []) and cfg["aliases"][0] == primary:
+            aliases = cfg.get("aliases", [key])
+            if aliases and aliases[0] == primary:
                 return cfg
         return None
 
     def get_model_names(self):
-        return [cfg["aliases"][0] for key, cfg in self.config.items() 
-                if key != "program" and "aliases" in cfg]
+        return [cfg.get("aliases", [key])[0] for key, cfg in self.config.items() 
+                if key != "program"]
 
     def get_adaptive_model_config(self, alias: str, online_devices: Set[str]):
         """获取适配当前硬件的模型启动配置"""
@@ -60,6 +72,7 @@ class ConfigManager:
         
         # 优先查找具体硬件配置块
         for key, val in base_config.items():
+            # 识别是否为硬件配置块（必须包含 required_devices）
             if isinstance(val, dict) and "required_devices" in val:
                 req = set(val["required_devices"])
                 if req.issubset(online_devices):
@@ -84,7 +97,6 @@ class ConfigManager:
         """验证配置文件的有效性"""
         errors = []
         try:
-            # 检查模型配置
             for key, model_cfg in self.config.items():
                 if key == "program": continue
 
@@ -94,7 +106,6 @@ class ConfigManager:
                         device_config = model_cfg[cfg_key]
                         if isinstance(device_config, dict):
                             has_device_config = True
-                            # 检查必需的配置项
                             required_device_keys = ['required_devices', 'script_path', 'memory_mb']
                             for req_key in required_device_keys:
                                 if req_key not in device_config:

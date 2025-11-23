@@ -1,6 +1,7 @@
 # 核心依赖
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
+pyyaml
 
 # HTTP客户端
 httpx>=0.25.0

@@ -4,10 +4,8 @@ LLM-Node 计算节点主程序
 纯后端版本：无GUI，无数据库，无Token统计
 """
 
-import time
 import sys
 import os
-import threading
 import concurrent.futures
 from utils.logger import setup_logging, get_logger
 from core.config_manager import ConfigManager
@@ -15,7 +13,8 @@ from core.api_server import run_api_server
 from core.process_manager import get_process_manager, cleanup_process_manager
 from core.model_controller import ModelController
 
-CONFIG_PATH = 'config.json'
+# 修改默认配置文件路径
+CONFIG_PATH = 'config.yaml'
 
 class NodeApplication:
     """LLM 计算节点应用程序"""
@@ -62,10 +61,7 @@ class NodeApplication:
             self.initialize()
             self.running = True
 
-            # 启动 API 服务器 (在主线程运行，因为 uvicorn 需要主线程信号处理，或者我们让它阻塞)
-            # 在这里我们选择直接运行 API Server，因为它会阻塞。
-            # 如果需要执行其他后台任务，应在 run_api_server 之前启动线程。
-            
+            # 启动 API 服务器 (阻塞运行)
             self.logger.info("正在启动节点 API 服务...")
             run_api_server(self.config_manager, self.model_controller)
 
