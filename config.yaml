@@ -12,28 +12,15 @@ program:
     - "Embedding"
     - "Reranker"
 
-bge-code-v1:
+jina-code-embeddings:
   aliases:
-    - "bge-code-v1"
+    - "jina-code-embeddings"
   mode: "Embedding"
   port: 10001
   auto_start: false
   CPU:
     required_devices:
       - "CPU"
-    script_path: "Model_startup_script/bge-code-v1.sh"
+    script_path: "Model_startup_script/jina-code-embeddings.sh"
     memory_mb:
       CPU: 2048
-
-Qwen3-Embedding-8B:
-  aliases:
-    - "Qwen3-Embedding-8B"
-  mode: "Embedding"
-  port: 10002
-  auto_start: false
-  CPU:
-    required_devices:
-      - "CPU"
-    script_path: "Model_startup_script/Qwen3-Embedding-8B.sh"
-    memory_mb:
-      CPU: 6144
