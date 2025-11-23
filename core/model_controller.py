@@ -1,6 +1,5 @@
 """
-模型控制器 - 节点版 (带文件日志管理)
-负责模型的启动、停止、资源管理以及按模型分类的日志记录
+模型控制器 - 节点版 (带文件日志管理 + 实时流支持)
 """
 
 import time
@@ -9,7 +8,7 @@ import os
 import glob
 import concurrent.futures
 from datetime import datetime
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, List, Callable
 from enum import Enum
 from utils.logger import get_logger
 from .plugin_system import PluginManager
@@ -20,11 +19,13 @@ logger = get_logger(__name__)
 
 class LogManager:
     """
-    文件日志管理器
+    日志管理器：支持文件持久化 + 实时内存广播
     """
     def __init__(self, base_log_dir: str = "logs/model_logs"):
         self.base_log_dir = base_log_dir
         self.active_log_paths: Dict[str, str] = {}
+        # 订阅者字典: {model_name: [callback_function, ...]}
+        self.subscribers: Dict[str, List[Callable[[str], None]]] = {}
         self.lock = threading.Lock()
 
         if not os.path.exists(self.base_log_dir):
@@ -35,7 +36,7 @@ class LogManager:
 
     def prepare_model_log(self, model_name: str):
         with self.lock:
-            # 跨平台安全名称替换 (替换 : \ / 为下划线)
+            # 跨平台安全名称替换
             safe_name = model_name.replace(":", "_").replace("\\", "_").replace("/", "_").replace(os.sep, "_")
             model_dir = os.path.join(self.base_log_dir, safe_name)
             
@@ -43,13 +44,11 @@ class LogManager:
                 os.makedirs(model_dir, exist_ok=True)
 
             log_files = glob.glob(os.path.join(model_dir, "*.log"))
-            # 按时间排序
             try:
                 log_files.sort(key=os.path.getmtime)
             except Exception:
                 pass
 
-            # 保留最新的10个
             while len(log_files) >= 10:
                 oldest_file = log_files.pop(0)
                 try:
@@ -71,22 +70,62 @@ class LogManager:
 
             return log_path
 
-    def add_console_log(self, model_name: str, message: str):
-        log_path = self.active_log_paths.get(model_name)
-        if not log_path:
-            return
+    def subscribe(self, model_name: str, callback: Callable[[str], None]):
+        """
+        订阅模型的实时日志
+        callback: 一个接受字符串参数的函数
+        """
+        with self.lock:
+            if model_name not in self.subscribers:
+                self.subscribers[model_name] = []
+            self.subscribers[model_name].append(callback)
 
+    def unsubscribe(self, model_name: str, callback: Callable[[str], None]):
+        """取消订阅"""
+        with self.lock:
+            if model_name in self.subscribers:
+                try:
+                    self.subscribers[model_name].remove(callback)
+                    if not self.subscribers[model_name]:
+                        del self.subscribers[model_name]
+                except ValueError:
+                    pass
+
+    def add_console_log(self, model_name: str, message: str):
+        """
+        记录日志：同时写入文件和推送给订阅者
+        注意：此方法通常由 ProcessManager 的监控线程调用
+        """
         time_str = datetime.now().strftime("%H:%M:%S")
         formatted_msg = f"[{time_str}] {message}\n"
 
-        try:
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(formatted_msg)
-        except Exception:
-            pass
+        # 1. 写入文件
+        log_path = self.active_log_paths.get(model_name)
+        if log_path:
+            try:
+                with open(log_path, 'a', encoding='utf-8') as f:
+                    f.write(formatted_msg)
+            except Exception:
+                pass
+
+        # 2. 广播给实时流订阅者
+        # 不需要加锁，因为列表本身是引用，且 copy 操作或直接迭代通常是线程安全的，
+        # 为了极度严谨，这里简单加个拷贝防止迭代时修改
+        subscribers_copy = []
+        with self.lock:
+            if model_name in self.subscribers:
+                subscribers_copy = self.subscribers[model_name][:]
+        
+        for callback in subscribers_copy:
+            try:
+                callback(formatted_msg)
+            except Exception as e:
+                logger.error(f"日志回调执行失败: {e}")
 
     def shutdown(self):
         self.active_log_paths.clear()
+        with self.lock:
+            self.subscribers.clear()
 
 
 class ModelStatus(Enum):
@@ -99,6 +138,10 @@ class ModelStatus(Enum):
 
 
 class ModelController:
+    # ... (ModelController 类的其余部分保持完全不变) ...
+    # 只要确保 ModelController 初始化时使用了上面的新 LogManager 即可
+    # 以下代码仅为上下文示意，不需要修改 __init__ 逻辑，只需确保上面的 LogManager 替换了原来的
+    
     """节点模型控制器"""
 
     def __init__(self, config_manager: ConfigManager):
@@ -107,7 +150,7 @@ class ModelController:
         self.is_running = True
         self.plugin_manager = None
         self.process_manager = get_process_manager()
-        self.log_manager = LogManager()
+        self.log_manager = LogManager()  # 使用新的 LogManager
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
         self.startup_locks: Dict[str, threading.Lock] = {}
         
@@ -127,7 +170,8 @@ class ModelController:
             self.startup_locks[primary_name] = threading.Lock()
 
         self.load_plugins()
-
+    
+    # ... (ModelController 的其余方法 start_model 等保持不变，直接复制之前的代码即可) ...
     def load_plugins(self):
         device_dir = self.config_manager.get_device_plugin_dir()
         interface_dir = self.config_manager.get_interface_plugin_dir()
@@ -207,7 +251,6 @@ class ModelController:
         
         logger.info(f"正在启动: {primary_name} (方案: {model_config.get('config_source')})")
         
-        # 跨平台路径处理：使用绝对路径作为 CWD
         project_root = os.path.dirname(os.path.abspath(self.config_manager.config_path))
         
         def output_callback(stream, msg):
@@ -218,7 +261,7 @@ class ModelController:
             name=f"model_{primary_name}",
             command=model_config['script_path'], 
             cwd=project_root,
-            shell=True,  # Linux 下对应 /bin/sh，Windows 下对应 cmd.exe
+            shell=True, 
             capture_output=True, 
             output_callback=output_callback
         )
@@ -240,7 +283,6 @@ class ModelController:
         required_memory = model_config.get("memory_mb", {})
         
         for attempt in range(2):
-            # 获取当前设备状态
             device_status_map = self.plugin_manager.get_device_status_snapshot()
             resource_ok = True
             deficit_devices = {}
@@ -251,7 +293,6 @@ class ModelController:
                     resource_ok = False; break
                 
                 info = status.get('info')
-                # 如果 info 为 None，视为无数据，谨慎起见视为不足
                 available = info.get('available_memory_mb', 0) if info else 0
                 if available < req_mb:
                     deficit_devices[dev_name] = req_mb - available
@@ -259,7 +300,6 @@ class ModelController:
             
             if resource_ok: return True
 
-            # 尝试释放资源 (仅在第一次尝试时执行)
             if attempt == 0:
                 if not self._stop_idle_models_for_resources(deficit_devices):
                     break
@@ -267,7 +307,6 @@ class ModelController:
                 logger.info("等待3秒让系统回收资源...")
                 time.sleep(3)
                 
-                # 强制刷新插件状态缓存
                 if hasattr(self.plugin_manager, '_update_device_status_once'):
                     try:
                         logger.info("正在强制刷新硬件状态缓存...")
@@ -322,7 +361,6 @@ class ModelController:
             
             pid = state.get('pid')
             if pid:
-                # 停止模型时，强制标志为 True，确保清理干净
                 self.process_manager.stop_process(f"model_{primary_name}", force=True)
             
             state['pid'] = None
