@@ -2,15 +2,11 @@ services:
   llm-node:
     build: .
     container_name: llm-node
-    # 挂载当前目录到容器 /app，实现代码修改即时生效
     volumes:
       - .:/app
     # 端口映射
     ports:
-      - "8080:8080"     # 主控 API 端口
-      # 如果你的模型端口是对外暴露的，需要开放相应的范围
-      # 例如 config.json 里配置了 10001 到 10011
-      - "10001-10020:10001-10020"
+      - "8080:8080"
     environment:
       - LOG_LEVEL=DEBUG
     stdin_open: true 
