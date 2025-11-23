@@ -73,7 +73,7 @@ node_modules/
 .config
 
 # 忽略VS Code工作区文件
-LLM-Manager.code-workspace
+LLM-Node.code-workspace
 
 # 忽略Claude Code相关文件
 .claude/
