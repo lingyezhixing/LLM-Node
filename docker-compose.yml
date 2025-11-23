@@ -1,16 +1,15 @@
 services:
   llm-node:
-    build: .
     container_name: llm-node
+    build: .
+    image: lingyezhixing/llm-node:latest
     volumes:
       - .:/app
     ports:
       - "8080:8080"
     environment:
       - LOG_LEVEL=DEBUG
-    stdin_open: true 
-    tty: true
-    restart: unless-stopped
+    restart: always
     networks:
       - open-webui-net
 
