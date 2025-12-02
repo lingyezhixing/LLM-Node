@@ -3,6 +3,8 @@ from fastapi.responses import StreamingResponse
 import json
 import httpx
 import asyncio
+import time
+from typing import Set  # 添加 Set 类型导入
 from utils.logger import get_logger
 from core.model_controller import ModelController
 from core.config_manager import ConfigManager
@@ -10,7 +12,7 @@ from core.config_manager import ConfigManager
 logger = get_logger(__name__)
 
 class APIRouter:
-    """API路由器 - 负责请求路由和转发 (无状态版 - 支持并发冷启动)"""
+    """API路由器 - 负责请求路由和转发 (无状态版 - 已修复并发死锁)"""
 
     def __init__(self, config_manager: ConfigManager, model_controller: ModelController):
         self.config_manager = config_manager
@@ -18,6 +20,9 @@ class APIRouter:
         self.async_clients = {}
         # 长连接配置，适应大模型推理时间
         self.timeouts = httpx.Timeout(30.0, read=600.0, connect=30.0, write=30.0)
+        
+        # 【新增】本地启动任务标记，防止高并发请求耗尽线程池
+        self.starting_models: Set[str] = set()
 
     async def get_async_client(self, port: int):
         """获取复用的异步HTTP客户端"""
@@ -75,12 +80,59 @@ class APIRouter:
             raise HTTPException(status_code=400, detail=error_message)
 
         # 4. 确保模型已启动 (节点核心功能：按需启动)
-        # 【优化】使用 asyncio.to_thread 确保启动过程不阻塞 API 主循环
-        # 这使得多个请求可以触发多个模型的并行冷启动
+        # 【核心修复】引入异步等待循环，防止高并发启动耗尽线程池
         try:
-            success, message = await asyncio.to_thread(self.model_controller.start_model, model_name)
-            if not success:
-                raise HTTPException(status_code=503, detail=message)
+            # 定义启动过程中的过渡状态
+            STARTUP_STATES = ['starting', 'init_script', 'health_check']
+
+            while True:
+                # A. 获取当前模型状态 (原子操作)
+                model_state = self.model_controller.models_state.get(model_name, {})
+                current_status = model_state.get('status', 'stopped')
+
+                # B. 如果模型已运行，跳出循环进行转发
+                if current_status == 'routing':
+                    break
+
+                # C. 检查是否正在启动
+                # 全局状态检查
+                is_starting_global = current_status in STARTUP_STATES
+                # 本地路由锁检查 (闭合并发时间窗口)
+                is_starting_local = model_name in self.starting_models
+
+                if is_starting_global or is_starting_local:
+                    # 发现正在启动，异步休眠等待，让出 CPU 给 Event Loop
+                    # 这确保了 100 个请求只会占用 0 个线程在等待
+                    logger.debug(f"[NODE_ROUTER] 模型 {model_name} 正在启动中({current_status})，异步等待...")
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # D. 只有状态为停止/失败，且本地没有正在进行的启动任务时，才发起启动
+                if current_status in ['stopped', 'failed']:
+                    # 标记本地锁
+                    self.starting_models.add(model_name)
+                    try:
+                        logger.info(f"[NODE_ROUTER] 模型 {model_name} 需要启动，分配唯一启动线程...")
+                        # 这是一个耗时操作，占用 1 个线程
+                        success, message = await asyncio.to_thread(
+                            self.model_controller.start_model, model_name
+                        )
+                        if not success:
+                            raise HTTPException(status_code=503, detail=message)
+                        # 启动成功后，下一次循环会检测到 routing 状态并 break
+                    except Exception as e:
+                        logger.error(f"[NODE_ROUTER] 启动模型异常: {e}")
+                        if isinstance(e, HTTPException):
+                            raise e
+                        raise HTTPException(status_code=503, detail=f"启动异常: {str(e)}")
+                    finally:
+                        # 无论成功失败，移除本地标记
+                        if model_name in self.starting_models:
+                            self.starting_models.remove(model_name)
+                    continue
+                
+                # 其他未知状态兜底等待
+                await asyncio.sleep(0.5)
 
             # 5. 转发请求
             target_port = model_config['port']
