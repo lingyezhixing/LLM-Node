@@ -429,14 +429,21 @@ class ModelController:
             self.stop_model(name)
 
     def idle_check_loop(self):
+        """
+        空闲检查循环 - 包含双重检查机制防止竞态条件
+        """
         while self.is_running:
             time.sleep(30)
-            alive_time = self.config_manager.get_alive_time() * 60
-            if alive_time <= 0: continue
+            # 获取配置的存活时间（分钟 -> 秒）
+            alive_time_min = self.config_manager.get_alive_time()
+            if alive_time_min <= 0: 
+                continue
             
+            alive_time = alive_time_min * 60
             now = time.time()
             models_to_stop = []
 
+            # 第一阶段：筛选候选模型
             for name in list(self.models_state.keys()):
                 state = self.models_state[name]
                 with state['lock']:
@@ -452,13 +459,24 @@ class ModelController:
                     if self.api_router:
                         pending_count = self.api_router.pending_requests.get(name, 0)
 
-                    # 只有无请求且超时才关闭
+                    # 只有无请求且超时才标记
                     if pending_count == 0 and (now - last_access) > alive_time:
-                        logger.info(f"模型 {name} 空闲超时且无请求，准备关闭...")
                         models_to_stop.append(name)
             
+            # 第二阶段：执行关闭（带最终确认）
             for name in models_to_stop:
-                self.stop_model(name)
+                # 【关键优化】在真正下刀之前，再次确认请求数
+                # 防止在筛选和执行的间隙有新请求进来
+                should_stop = True
+                if self.api_router:
+                    current_pending = self.api_router.pending_requests.get(name, 0)
+                    if current_pending > 0:
+                        logger.info(f"模型 {name} 在关闭前一刻收到新请求，取消关闭")
+                        should_stop = False
+                
+                if should_stop:
+                    logger.info(f"模型 {name} 空闲超时，正在关闭...")
+                    self.stop_model(name)
 
     def get_model_list(self):
         data = []
