@@ -17,6 +17,10 @@ class APIServer:
         self.config_manager = config_manager
         self.model_controller = model_controller
         self.api_router = APIRouter(self.config_manager, self.model_controller)
+        
+        # 【关键修改】将 Router 注入 Controller，启用请求计数检查
+        self.model_controller.set_api_router(self.api_router)
+        
         self.app = FastAPI(title="LLM-Manager Node", version="1.0.0")
         self._setup_routes()
         logger.info("API 服务器初始化完成 (节点模式)")

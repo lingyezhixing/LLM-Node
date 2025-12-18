@@ -1,5 +1,5 @@
 """
-模型控制器 - 节点版 (带文件日志管理 + 实时流支持)
+模型控制器 - 节点版 (带文件日志管理 + 实时流支持 + 动态加权淘汰)
 """
 
 import time
@@ -109,8 +109,6 @@ class LogManager:
                 pass
 
         # 2. 广播给实时流订阅者
-        # 不需要加锁，因为列表本身是引用，且 copy 操作或直接迭代通常是线程安全的，
-        # 为了极度严谨，这里简单加个拷贝防止迭代时修改
         subscribers_copy = []
         with self.lock:
             if model_name in self.subscribers:
@@ -138,10 +136,6 @@ class ModelStatus(Enum):
 
 
 class ModelController:
-    # ... (ModelController 类的其余部分保持完全不变) ...
-    # 只要确保 ModelController 初始化时使用了上面的新 LogManager 即可
-    # 以下代码仅为上下文示意，不需要修改 __init__ 逻辑，只需确保上面的 LogManager 替换了原来的
-    
     """节点模型控制器"""
 
     def __init__(self, config_manager: ConfigManager):
@@ -150,9 +144,10 @@ class ModelController:
         self.is_running = True
         self.plugin_manager = None
         self.process_manager = get_process_manager()
-        self.log_manager = LogManager()  # 使用新的 LogManager
+        self.log_manager = LogManager()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
         self.startup_locks: Dict[str, threading.Lock] = {}
+        self.api_router = None  # 添加 API Router 引用
         
         self.idle_check_thread = threading.Thread(target=self.idle_check_loop, daemon=True)
         self.idle_check_thread.start()
@@ -171,7 +166,10 @@ class ModelController:
 
         self.load_plugins()
     
-    # ... (ModelController 的其余方法 start_model 等保持不变，直接复制之前的代码即可) ...
+    def set_api_router(self, api_router):
+        """注入 API Router 以获取请求状态"""
+        self.api_router = api_router
+
     def load_plugins(self):
         device_dir = self.config_manager.get_device_plugin_dir()
         interface_dir = self.config_manager.get_interface_plugin_dir()
@@ -316,24 +314,81 @@ class ModelController:
         
         return False
 
-    def _stop_idle_models_for_resources(self, deficit_devices):
-        candidates = []
+    def _stop_idle_models_for_resources(self, deficit_devices) -> bool:
+        """
+        [优化版] 停止一个空闲模型以释放资源
+        实现动态加权淘汰算法：分数 = 空闲时间 / max(0.5, 显存占用GB)
+        优先关闭：空闲时间长 且 显存占用小（重启成本低）的模型
+        """
+        idle_candidates = []
+        now = time.time()
+
         for name, state in self.models_state.items():
             with state['lock']:
-                if state['status'] == ModelStatus.ROUTING.value:
-                    cfg = state.get('current_config', {})
-                    used = set(cfg.get('required_devices', []))
-                    if not used.isdisjoint(deficit_devices.keys()):
-                        candidates.append(name)
-        
-        candidates.sort(key=lambda m: self.models_state[m].get('last_access', 0) or 0)
-        
-        for name in candidates:
-            logger.info(f"为释放资源停止空闲模型: {name}")
-            self.stop_model(name)
-            return True 
-            
-        return False
+                # 1. 状态检查
+                if state['status'] != ModelStatus.ROUTING.value:
+                    continue
+
+                # 2. 活跃请求检查 (防止误杀正在工作的模型)
+                if self.api_router and self.api_router.pending_requests.get(name, 0) > 0:
+                    logger.debug(f"跳过模型 {name}: 有待处理请求")
+                    continue
+                
+                current_config = state.get('current_config')
+                if not current_config:
+                    continue
+                
+                # 3. 设备相关性检查
+                used_devices = set(current_config.get('required_devices', []))
+                if not used_devices:
+                    used_devices = set(current_config.get('memory_mb', {}).keys())
+                
+                if used_devices.isdisjoint(set(deficit_devices.keys())):
+                    continue
+                
+                # 4. 计算淘汰评分
+                last_access = state.get('last_access') or 0
+                idle_seconds = max(0, now - last_access)
+                
+                total_memory_mb = sum(current_config.get('memory_mb', {}).values())
+                memory_gb = total_memory_mb / 1024.0
+                # 设定0.5GB作为分母下限，防止除以极小值导致分数过大
+                memory_gb_for_score = max(0.5, memory_gb)
+
+                # 核心公式：显存越小、空闲越久，分数越高 -> 越容易被关闭
+                # 理念：保留大显存模型（重启慢），优先清理小模型
+                eviction_score = idle_seconds / memory_gb_for_score
+                
+                idle_candidates.append({
+                    "name": name,
+                    "score": eviction_score,
+                    "idle_seconds": idle_seconds,
+                    "memory_gb": memory_gb
+                })
+
+        if not idle_candidates:
+            logger.info("没有找到占用相关设备的可停止空闲模型")
+            return False
+
+        # 按分数从高到低排序
+        sorted_candidates = sorted(idle_candidates, key=lambda x: x['score'], reverse=True)
+
+        logger.info(f"资源释放候选列表 (按优先级排序):")
+        for c in sorted_candidates:
+            logger.info(f"  - {c['name']}: 空闲 {c['idle_seconds']:.0f}s, 显存 {c['memory_gb']:.2f}GB -> 分数 {c['score']:.4f}")
+
+        # 关闭分数最高的模型
+        candidate_to_stop = sorted_candidates[0]
+        model_name = candidate_to_stop['name']
+        logger.info(f"为释放资源，正在停止模型: {model_name} (当前评分最高)")
+        success, message = self.stop_model(model_name)
+
+        if success:
+            logger.info(f"模型 {model_name} 已成功停止")
+            return True
+        else:
+            logger.warning(f"尝试停止模型 {model_name} 失败: {message}")
+            return False
 
     def _perform_health_checks(self, name, config):
         interface = self.plugin_manager.get_interface_plugin(config.get("mode", "Chat"))
@@ -380,11 +435,30 @@ class ModelController:
             if alive_time <= 0: continue
             
             now = time.time()
-            for name, state in self.models_state.items():
-                if state['status'] == ModelStatus.ROUTING.value and state['last_access']:
-                    if (now - state['last_access']) > alive_time:
-                        logger.info(f"模型 {name} 空闲超时，正在关闭...")
-                        self.stop_model(name)
+            models_to_stop = []
+
+            for name in list(self.models_state.keys()):
+                state = self.models_state[name]
+                with state['lock']:
+                    if state['status'] != ModelStatus.ROUTING.value:
+                        continue
+                    
+                    last_access = state.get('last_access')
+                    if not last_access:
+                        continue
+
+                    # 检查是否有待处理请求
+                    pending_count = 0
+                    if self.api_router:
+                        pending_count = self.api_router.pending_requests.get(name, 0)
+
+                    # 只有无请求且超时才关闭
+                    if pending_count == 0 and (now - last_access) > alive_time:
+                        logger.info(f"模型 {name} 空闲超时且无请求，准备关闭...")
+                        models_to_stop.append(name)
+            
+            for name in models_to_stop:
+                self.stop_model(name)
 
     def get_model_list(self):
         data = []
