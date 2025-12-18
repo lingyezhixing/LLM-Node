@@ -26,12 +26,15 @@ class APIServer:
         logger.info("API 服务器初始化完成 (节点模式)")
 
     def _setup_routes(self):
+        @self.app.get("/api/info")
+        async def api_info():
+            return {"message": "LLM-Node API", "version": "1.1.0", "models_url": "/v1/models"}
         
         @self.app.get("/api/health")
         async def health_check():
             """节点健康检查，返回运行中的模型数量"""
             routing_count = len([s for s in self.model_controller.models_state.values() if s['status'] == 'routing'])
-            return {"status": "healthy", "role": "node", "running_models": routing_count}
+            return {"status": "healthy", "role": "Node", "models_count": len(self.model_controller.models_state), "running_models": routing_count}
 
         @self.app.get("/api/devices/info")
         async def get_device_info():
