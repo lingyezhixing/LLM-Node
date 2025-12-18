@@ -48,37 +48,54 @@ class APIServer:
 
         @self.app.get("/api/models/{model_alias}/info")
         async def get_model_details(model_alias: str):
-            """获取模型详细运行信息 (配置、状态、进程信息)"""
+            """
+            获取模型详细运行信息
+            已对齐 LLM-Manager 格式，包含 pending_requests
+            """
             try:
                 model_name = self.config_manager.resolve_primary_name(model_alias)
+                
+                # 获取状态和配置
+                state = self.model_controller.models_state.get(model_name, {})
                 config = self.config_manager.get_model_config(model_name)
                 
                 if not config:
                      raise HTTPException(status_code=404, detail=f"Model '{model_alias}' not found")
 
-                # 获取运行时状态
-                state = self.model_controller.models_state.get(model_name, {})
-                
+                # 获取待处理请求数 (从 Router 获取)
+                pending_requests = self.api_router.pending_requests.get(model_name, 0)
+
                 # 获取进程详细信息 (如果进程存在)
                 process_data = None
                 if state.get('pid'):
                     process_name = f"model_{model_name}"
                     process_data = self.model_controller.process_manager.get_process_info(process_name)
 
+                # 构造符合 Manager 预期的 model_info 对象
+                # Manager 使用: model_status = {**state, "pending_requests": ...}
+                model_standard_info = {
+                    "status": state.get("status", "unknown"),
+                    "pid": state.get("pid"),
+                    "last_access": state.get("last_access"),
+                    "failure_reason": state.get("failure_reason"),
+                    "mode": config.get("mode", "Chat"),
+                    "pending_requests": pending_requests,  # 关键字段
+                    "port": config.get("port"),
+                    "aliases": config.get("aliases", [model_name])
+                }
+
                 return {
                     "success": True,
-                    "model_name": model_name,
-                    "queried_alias": model_alias,
-                    "static_config": config,
-                    "runtime_state": {
-                        "status": state.get("status", "unknown"),
-                        "pid": state.get("pid"),
-                        "last_access": state.get("last_access"),
-                        "failure_reason": state.get("failure_reason"),
-                        # 这是一个很关键的字段，展示了当前模型到底是按哪套硬件方案运行的 (比如 RTX4060 还是 CPU)
-                        "active_hardware_config": state.get("current_config")
-                    },
-                    "process_info": process_data
+                    # 提供 "model" 键，与 Manager 格式完全对齐
+                    "model": model_standard_info,
+                    
+                    # 保留 Node 版特有的详细调试信息
+                    "node_debug_info": {
+                        "model_name": model_name,
+                        "queried_alias": model_alias,
+                        "active_hardware_config": state.get("current_config"),
+                        "process_info": process_data
+                    }
                 }
             except Exception as e:
                 logger.error(f"获取模型信息失败: {e}")
