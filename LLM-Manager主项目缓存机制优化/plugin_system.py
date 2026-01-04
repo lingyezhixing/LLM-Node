@@ -200,7 +200,7 @@ class PluginManager:
         self.interface_plugins: Dict[str, Any] = {}
         self.last_reload_time = 0
         
-        # --- 设备状态缓存机制 (解决死锁的核心) ---
+        # --- 设备状态缓存机制 ---
         self.device_status_cache = {}
         self.cache_lock = threading.RLock()
         self.monitor_thread = None
@@ -214,11 +214,11 @@ class PluginManager:
         """启动设备状态后台监控线程"""
         if self.is_monitoring:
             return
-
+        
         self.is_monitoring = True
         # 先进行一次同步更新，确保启动时缓存有数据
         self.update_device_status()
-
+        
         self.monitor_thread = threading.Thread(target=self._monitor_devices_loop, daemon=True)
         self.monitor_thread.start()
         logger.info("设备状态监控线程已启动")
@@ -253,49 +253,6 @@ class PluginManager:
         self.is_monitoring = False
         logger.info("[按需监控] 监控线程已停止")
 
-    def update_device_status(self):
-        """
-        更新设备状态缓存（同步方法）
-        该方法会阻塞直到所有设备插件完成状态更新。
-        可以被后台监控线程调用，也可以在需要最新状态时主动调用。
-        """
-        new_cache = {}
-        for name, plugin in self.device_plugins.items():
-            try:
-                # 注意：这些调用可能会阻塞，放在后台线程执行
-                is_online = plugin.is_online() if hasattr(plugin, 'is_online') else False
-                device_info = plugin.get_devices_info() if hasattr(plugin, 'get_devices_info') and is_online else None
-                
-                new_cache[name] = {
-                    "online": is_online,
-                    "info": device_info,
-                    "type": type(plugin).__name__
-                }
-            except Exception as e:
-                logger.warning(f"更新设备 {name} 状态时出错: {e}")
-                new_cache[name] = {
-                    "online": False, 
-                    "error": str(e),
-                    "type": type(plugin).__name__
-                }
-
-        with self.cache_lock:
-            self.device_status_cache = new_cache
-
-    def get_device_status_snapshot(self) -> Dict[str, Any]:
-        """
-        获取设备状态的快照（从缓存读取，非阻塞）
-        用于API快速响应和模型启动前的快速检查
-        """
-        with self.cache_lock:
-            # 返回深拷贝副本，防止外部修改
-            return {k: v.copy() for k, v in self.device_status_cache.items()}
-
-    def get_cached_online_devices(self) -> set:
-        """获取当前缓存中显示的在线设备集合"""
-        with self.cache_lock:
-            return {name for name, data in self.device_status_cache.items() if data.get("online", False)}
-
     def on_api_request(self):
         """
         记录API请求并启动监控（按需触发）
@@ -322,6 +279,49 @@ class PluginManager:
         with self.api_request_lock:
             idle_time = time.time() - self.last_api_request_time
             return idle_time > 10
+
+    def update_device_status(self):
+        """
+        更新设备状态缓存（同步方法）
+        该方法会阻塞直到所有设备插件完成状态更新。
+        可以被后台监控线程调用，也可以在需要最新状态时主动调用。
+        """
+        new_cache = {}
+        for name, plugin in self.device_plugins.items():
+            try:
+                # 注意：这些调用可能会阻塞，放在后台线程执行
+                is_online = plugin.is_online() if hasattr(plugin, 'is_online') else False
+                device_info = plugin.get_devices_info() if hasattr(plugin, 'get_devices_info') and is_online else None
+
+                new_cache[name] = {
+                    "online": is_online,
+                    "info": device_info,
+                    "type": type(plugin).__name__
+                }
+            except Exception as e:
+                logger.warning(f"更新设备 {name} 状态时出错: {e}")
+                new_cache[name] = {
+                    "online": False,
+                    "error": str(e),
+                    "type": type(plugin).__name__
+                }
+
+        with self.cache_lock:
+            self.device_status_cache = new_cache
+
+    def get_device_status_snapshot(self) -> Dict[str, Any]:
+        """
+        获取设备状态的快照（从缓存读取，非阻塞）
+        用于API快速响应和模型启动前的快速检查
+        """
+        with self.cache_lock:
+            # 返回深拷贝副本，防止外部修改
+            return {k: v.copy() for k, v in self.device_status_cache.items()}
+
+    def get_cached_online_devices(self) -> set:
+        """获取当前缓存中显示的在线设备集合"""
+        with self.cache_lock:
+            return {name for name, data in self.device_status_cache.items() if data.get("online", False)}
 
     # ----------------------------------------
 

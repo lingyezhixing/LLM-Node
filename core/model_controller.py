@@ -175,7 +175,8 @@ class ModelController:
         interface_dir = self.config_manager.get_interface_plugin_dir()
         self.plugin_manager = PluginManager(device_dir, interface_dir)
         self.plugin_manager.load_all_plugins(model_manager=self)
-        self.plugin_manager.start_monitor()
+        # 按需监控：不在启动时自动开启监控，等待首次API请求时再启动
+        logger.info("设备监控设置为按需模式，将在首次请求时启动")
 
     def start_model(self, primary_name: str) -> Tuple[bool, str]:
         state = self.models_state[primary_name]
@@ -195,11 +196,18 @@ class ModelController:
             with state['lock']:
                 if state['status'] == ModelStatus.ROUTING.value:
                     return True, "模型已由其他线程启动"
-                
+
                 state['status'] = ModelStatus.STARTING.value
                 state['failure_reason'] = None
-            
-            return self._start_model_intelligent(primary_name)
+
+            success, message = self._start_model_intelligent(primary_name)
+
+            # 启动成功后刷新设备状态缓存
+            if success:
+                logger.info(f"模型 '{primary_name}' 启动成功，正在刷新设备状态缓存...")
+                self.plugin_manager.update_device_status()
+
+            return success, message
         except Exception as e:
             with state['lock']:
                 state['status'] = ModelStatus.FAILED.value
@@ -271,7 +279,7 @@ class ModelController:
 
         with state['lock']:
             state['status'] = ModelStatus.HEALTH_CHECK.value
-        
+
         return self._perform_health_checks(primary_name, model_config)
 
     def _check_and_free_resources(self, model_config):
@@ -304,13 +312,12 @@ class ModelController:
                 
                 logger.info("等待3秒让系统回收资源...")
                 time.sleep(3)
-                
-                if hasattr(self.plugin_manager, '_update_device_status_once'):
-                    try:
-                        logger.info("正在强制刷新硬件状态缓存...")
-                        self.plugin_manager._update_device_status_once()
-                    except Exception as e:
-                        logger.warning(f"强制刷新设备状态失败: {e}")
+
+                try:
+                    logger.info("正在强制刷新硬件状态缓存...")
+                    self.plugin_manager.update_device_status()
+                except Exception as e:
+                    logger.warning(f"强制刷新设备状态失败: {e}")
         
         return False
 
@@ -420,13 +427,43 @@ class ModelController:
             
             state['pid'] = None
             state['current_config'] = None
-            
+
+        # 停止后刷新设备状态缓存
+        logger.info(f"模型 '{primary_name}' 已停止，正在刷新设备状态缓存...")
+        self.plugin_manager.update_device_status()
+
         return True, "Stopped"
 
     def unload_all_models(self):
-        logger.info("正在卸载所有模型...")
-        for name in self.models_state:
-            self.stop_model(name)
+        """
+        卸载所有运行中的模型
+        [重构] 基于 stop_model 实现，避免代码重复，自动获得缓存刷新功能
+        """
+        logger.info("正在卸载所有运行中的模型...")
+        primary_names = list(self.models_state.keys())
+
+        terminated_count = 0
+        failed_models = []
+
+        # [优化] 直接调用 stop_model，复用其所有逻辑（包括缓存刷新）
+        for name in primary_names:
+            try:
+                success, message = self.stop_model(name)
+                if success:
+                    terminated_count += 1
+                    logger.debug(f"模型 '{name}' 已成功卸载")
+                else:
+                    logger.warning(f"模型 '{name}' 卸载失败: {message}")
+                    failed_models.append(name)
+            except Exception as e:
+                logger.error(f"卸载模型 '{name}' 时发生异常: {e}")
+                failed_models.append(name)
+
+        logger.info(f"所有模型卸载完成，成功: {terminated_count}/{len(primary_names)}")
+        if failed_models:
+            logger.warning(f"以下模型卸载失败: {failed_models}")
+
+        return terminated_count
 
     def idle_check_loop(self):
         """

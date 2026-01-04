@@ -40,7 +40,12 @@ class APIServer:
         async def get_device_info():
             """获取节点硬件资源信息"""
             try:
+                # 按需监控：记录API请求，触发监控启动
+                self.model_controller.plugin_manager.on_api_request()
+
+                # 获取缓存的设备状态快照（非阻塞，避免死锁）
                 devices_info = self.model_controller.plugin_manager.get_device_status_snapshot()
+
                 return {"success": True, "devices": devices_info}
             except Exception as e:
                 logger.error(f"获取设备信息失败: {e}")
