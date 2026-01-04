@@ -171,12 +171,32 @@ class ModelController:
         self.api_router = api_router
 
     def load_plugins(self):
+        """加载设备插件和接口插件"""
         device_dir = self.config_manager.get_device_plugin_dir()
         interface_dir = self.config_manager.get_interface_plugin_dir()
+
+        # 创建插件管理器
         self.plugin_manager = PluginManager(device_dir, interface_dir)
-        self.plugin_manager.load_all_plugins(model_manager=self)
-        # 按需监控：不在启动时自动开启监控，等待首次API请求时再启动
-        logger.info("设备监控设置为按需模式，将在首次请求时启动")
+
+        # 加载所有插件
+        try:
+            result = self.plugin_manager.load_all_plugins(model_manager=self)
+            logger.info(f"设备插件自动加载完成: {list(self.plugin_manager.get_all_device_plugins().keys())}")
+            logger.info(f"接口插件自动加载完成: {list(self.plugin_manager.get_all_interface_plugins().keys())}")
+
+            logger.info("正在初始化设备状态缓存...")
+            self.plugin_manager.update_device_status()
+
+            # 检查是否有设备在线 (使用缓存读取)
+            online_devices = self.plugin_manager.get_cached_online_devices()
+            if online_devices:
+                logger.info(f"在线设备: {list(online_devices)}")
+            else:
+                logger.warning("未检测到在线设备")
+
+        except Exception as e:
+            logger.error(f"自动加载插件失败: {e}")
+            raise
 
     def start_model(self, primary_name: str) -> Tuple[bool, str]:
         state = self.models_state[primary_name]
