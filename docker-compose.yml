@@ -14,7 +14,10 @@ services:
     restart: always
     networks:
       - open-webui-net
+      - nastool-net
 
 networks:
   open-webui-net:
+    external: true
+  nastool-net:
     external: true
