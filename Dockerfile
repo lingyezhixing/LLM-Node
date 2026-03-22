@@ -5,12 +5,11 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# 1. [固化] 替换 APT 源为阿里云 (为了速度)
+# 1. 替换 APT 源为阿里云
 RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
     sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
 
 # 2. [最小化安装] 系统依赖
-# --no-install-recommends: 不安装推荐包，减小体积
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     libopenblas0 \
@@ -30,14 +29,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
-# 4. 授权并启动脚本
+# 4. 启动脚本（自动配置 Git 代理 + 权限修复）
 RUN echo '#!/bin/bash\n\
+echo "[GIT-PROXY] Setting up proxy via v2raya:20171"\n\
+git config --global http.proxy "http://v2raya:20171"\n\
+git config --global https.proxy "http://v2raya:20171"\n\
 if [ -d "Model_startup_script" ]; then\n\
     echo ">>> checking and fixing scripts..."\n\
     find Model_startup_script -name "*.sh" -exec sed -i "s/\r$//" {} \;\n\
     find Model_startup_script -name "*.sh" -exec chmod +x {} \;\n\
 fi\n\
-\n\
 echo ">>> Starting LLM-Node..."\n\
 exec "$@"' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
