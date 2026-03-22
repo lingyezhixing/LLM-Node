@@ -105,3 +105,6 @@ QUICK_STATS_README.md
 # 忽略AI上下文生成器
 generate_ai_context.py
 node_context.md
+
+# 忽略整个 models 目录及其内容
+models/
