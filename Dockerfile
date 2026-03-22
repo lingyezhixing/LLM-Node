@@ -12,16 +12,12 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 # 2. [最小化安装] 系统依赖
 # --no-install-recommends: 不安装推荐包，减小体积
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # === Python 运行依赖（原有）===
     libgomp1 \
     libopenblas0 \
-    # === Vulkan 运行时（原有，用于 llm-node 推理）===
     mesa-vulkan-drivers \
     libvulkan1 \
-    # === Vulkan 编译依赖（新增，用于 llama.cpp 编译）===
     libvulkan-dev \
     glslc \
-    # === CMake 构建工具（新增）===
     cmake \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
