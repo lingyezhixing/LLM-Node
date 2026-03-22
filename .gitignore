@@ -19,8 +19,11 @@
 # 忽略Model_startup_script文件夹
 /Model_startup_script/
 
+# 忽略src文件夹
+/src/
+
 # 忽略config.json文件
-# /config.json'
+/config.json
 
 # 忽略数据库文件
 /webui/monitoring.db

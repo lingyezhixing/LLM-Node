@@ -5,6 +5,8 @@ services:
     image: lingyezhixing/llm-node:latest
     volumes:
       - .:/app
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
     ports:
       - "8080:8080"
     environment:
