@@ -42,7 +42,7 @@ class NodeApplication:
         if not os.path.exists(self.config_path):
             print(f"配置文件不存在: {self.config_path}")
             sys.exit(1)
-            
+
         self.config_manager = ConfigManager(self.config_path)
         self.setup_logging()
         self.logger.info(">>> 正在启动 LLM 计算节点 (Node Mode) <<<")
@@ -61,6 +61,9 @@ class NodeApplication:
             self.initialize()
             self.running = True
 
+            # 自动启动（在后台线程中，不阻塞 API 启动）
+            self.executor.submit(self.model_controller.start_auto_start_models)
+
             # 启动 API 服务器 (阻塞运行)
             self.logger.info("正在启动节点 API 服务...")
             run_api_server(self.config_manager, self.model_controller)
@@ -76,13 +79,13 @@ class NodeApplication:
         """关闭节点"""
         if not self.running:
             return
-            
+
         self.logger.info("正在关闭节点服务...")
         self.running = False
-        
+
         if self.model_controller:
             self.model_controller.shutdown()
-            
+
         cleanup_process_manager()
         self.executor.shutdown(wait=True)
         self.logger.info("节点服务已安全关闭")

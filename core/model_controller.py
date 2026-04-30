@@ -1,11 +1,12 @@
 """
-模型控制器 - 节点版 (带文件日志管理 + 实时流支持 + 动态加权淘汰)
+模型控制器 - 节点版 (带文件日志管理 + 实时流支持 + 动态加权淘汰 + Checkpoint中断)
 """
 
 import time
 import threading
 import os
 import glob
+import subprocess
 import concurrent.futures
 from datetime import datetime
 from typing import Dict, Tuple, Any, List, Callable
@@ -39,7 +40,7 @@ class LogManager:
             # 跨平台安全名称替换
             safe_name = model_name.replace(":", "_").replace("\\", "_").replace("/", "_").replace(os.sep, "_")
             model_dir = os.path.join(self.base_log_dir, safe_name)
-            
+
             if not os.path.exists(model_dir):
                 os.makedirs(model_dir, exist_ok=True)
 
@@ -59,9 +60,9 @@ class LogManager:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_filename = f"{safe_name}_{timestamp}.log"
             log_path = os.path.join(model_dir, log_filename)
-            
+
             self.active_log_paths[model_name] = log_path
-            
+
             try:
                 with open(log_path, 'w', encoding='utf-8') as f:
                     f.write(f"=== Log Start: {model_name} at {timestamp} ===\n")
@@ -113,7 +114,7 @@ class LogManager:
         with self.lock:
             if model_name in self.subscribers:
                 subscribers_copy = self.subscribers[model_name][:]
-        
+
         for callback in subscribers_copy:
             try:
                 callback(formatted_msg)
@@ -148,7 +149,7 @@ class ModelController:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
         self.startup_locks: Dict[str, threading.Lock] = {}
         self.api_router = None  # 添加 API Router 引用
-        
+
         self.idle_check_thread = threading.Thread(target=self.idle_check_loop, daemon=True)
         self.idle_check_thread.start()
 
@@ -165,7 +166,7 @@ class ModelController:
             self.startup_locks[primary_name] = threading.Lock()
 
         self.load_plugins()
-    
+
     def set_api_router(self, api_router):
         """注入 API Router 以获取请求状态"""
         self.api_router = api_router
@@ -198,10 +199,84 @@ class ModelController:
             logger.error(f"自动加载插件失败: {e}")
             raise
 
+    def _check_if_cancelled(self, primary_name: str) -> bool:
+        """[Checkpoint] 检查启动流程是否已被用户取消"""
+        state = self.models_state[primary_name]
+        with state['lock']:
+            cancelled = state['status'] == ModelStatus.STOPPED.value
+            if cancelled:
+                logger.info(f"检测到取消信号，终止启动流程: {primary_name}")
+                state['failure_reason'] = "启动被用户中断"
+        return cancelled
+
+    def _reset_model_state(self, state: Dict[str, Any]):
+        """重置状态字典为初始值"""
+        state.update({
+            "process": None,
+            "pid": None,
+            "status": ModelStatus.STOPPED.value,
+            "last_access": None,
+            "current_config": None,
+            "failure_reason": None
+        })
+
+    def start_auto_start_models(self):
+        """批量启动配置为自动启动的模型"""
+        logger.info("正在扫描自动启动配置...")
+
+        if not self.config_manager.is_gpu_monitoring_disabled():
+            self.plugin_manager.update_device_status()
+
+        online_devices = self.plugin_manager.get_cached_online_devices()
+
+        if not online_devices and not self.config_manager.is_gpu_monitoring_disabled():
+            logger.warning("未检测到在线设备，跳过自动启动")
+            return
+
+        auto_start_models = [
+            name for name in self.config_manager.get_model_names()
+            if self.config_manager.is_auto_start(name)
+        ]
+
+        if not auto_start_models:
+            logger.info("无自动启动模型")
+            return
+
+        logger.info(f"准备并行启动 {len(auto_start_models)} 个模型: {auto_start_models}")
+
+        def start_single_model(model_name):
+            try:
+                success, msg = self.start_model(model_name)
+                return model_name, success, msg
+            except Exception as ex:
+                logger.error(f"自动启动异常 [{model_name}]: {ex}")
+                return model_name, False, f"异常: {ex}"
+
+        futures = []
+        for model_name in auto_start_models:
+            futures.append(self.executor.submit(start_single_model, model_name))
+
+        started_count = 0
+        for future in concurrent.futures.as_completed(futures, timeout=120):
+            try:
+                name, success, msg = future.result()
+                if success:
+                    started_count += 1
+                else:
+                    logger.warning(f"自动启动失败 [{name}]: {msg}")
+            except Exception as e:
+                logger.error(f"处理启动结果异常: {e}")
+
+        logger.info(f"自动启动流程完成: 成功 {started_count}/{len(auto_start_models)}")
+
     def start_model(self, primary_name: str) -> Tuple[bool, str]:
+        """
+        启动模型（线程安全，支持重入与中断）
+        """
         state = self.models_state[primary_name]
         model_lock = self.startup_locks[primary_name]
 
+        # 1. 快速状态检查
         with state['lock']:
             if state['status'] == ModelStatus.ROUTING.value:
                 state['last_access'] = time.time()
@@ -209,105 +284,189 @@ class ModelController:
             elif state['status'] == ModelStatus.STARTING.value:
                 return self._wait_for_model_startup(primary_name, state)
 
-        if not model_lock.acquire(blocking=True, timeout=60):
-            return False, f"获取启动锁超时: {primary_name}"
+        # 2. 获取启动互斥锁
+        lock_acquired = False
+        try:
+            lock_acquired = model_lock.acquire(blocking=True, timeout=60)
+            if not lock_acquired:
+                return False, f"获取启动锁超时: {primary_name}"
+        except Exception as e:
+            if lock_acquired:
+                model_lock.release()
+            return False, f"锁获取异常: {e}"
 
         try:
             with state['lock']:
+                # 双重检查
                 if state['status'] == ModelStatus.ROUTING.value:
                     return True, "模型已由其他线程启动"
 
                 state['status'] = ModelStatus.STARTING.value
                 state['failure_reason'] = None
 
-            success, message = self._start_model_intelligent(primary_name)
+            try:
+                success, message = self._start_model_intelligent(primary_name)
 
-            # 启动成功后刷新设备状态缓存
-            if success:
-                logger.info(f"模型 '{primary_name}' 启动成功，正在刷新设备状态缓存...")
-                self.plugin_manager.update_device_status()
+                # [Checkpoint] 最终防线
+                if self._check_if_cancelled(primary_name):
+                    with state['lock']:
+                        pid = state.get('pid')
+                        if pid:
+                            logger.warning(f"启动完成但收到停止信号，清理残留进程 PID: {pid}")
+                            self.process_manager.stop_process(f"model_{primary_name}", force=True)
+                            self._reset_model_state(state)
+                    return False, "启动完成后被立即停止"
 
-            return success, message
-        except Exception as e:
-            with state['lock']:
-                state['status'] = ModelStatus.FAILED.value
-                state['failure_reason'] = str(e)
-            logger.error(f"启动失败: {e}", exc_info=True)
-            return False, str(e)
+                if success:
+                    logger.info(f"模型 '{primary_name}' 启动成功，正在刷新设备状态缓存...")
+                    self.plugin_manager.update_device_status()
+
+                return success, message
+            except Exception as e:
+                with state['lock']:
+                    state['status'] = ModelStatus.FAILED.value
+                    state['failure_reason'] = str(e)
+                logger.error(f"启动失败: {e}", exc_info=True)
+                return False, f"启动异常: {e}"
+
         finally:
-            model_lock.release()
+            if lock_acquired:
+                try:
+                    model_lock.release()
+                except Exception:
+                    pass
 
     def _wait_for_model_startup(self, primary_name, state):
-        for _ in range(120):
+        wait_start = time.time()
+        max_wait = 120
+        last_log = wait_start
+
+        while True:
+            now = time.time()
+            elapsed = now - wait_start
+
+            if now - last_log >= 30:
+                logger.info(f"等待中... {primary_name} ({elapsed:.1f}s)")
+                last_log = now
+
             with state['lock']:
-                if state['status'] == ModelStatus.ROUTING.value:
-                    return True, "启动成功"
-                if state['status'] in [ModelStatus.FAILED.value, ModelStatus.STOPPED.value]:
-                    return False, "启动失败或被停止"
-            time.sleep(1)
-        return False, "等待启动超时"
+                status = state['status']
+                fail_reason = state.get('failure_reason')
+
+            if elapsed > max_wait:
+                return False, "等待启动超时"
+
+            if status == ModelStatus.ROUTING.value:
+                return True, "启动成功"
+            elif status == ModelStatus.FAILED.value:
+                return False, f"启动失败: {fail_reason}"
+            elif status == ModelStatus.STOPPED.value:
+                logger.info(f"等待期间检测到停止信号: {primary_name}")
+                return False, "启动被用户中断"
+
+            time.sleep(0.5)
 
     def _start_model_intelligent(self, primary_name: str) -> Tuple[bool, str]:
         state = self.models_state[primary_name]
-        
-        online_devices = self.plugin_manager.get_cached_online_devices()
-        
-        if self.config_manager.is_gpu_monitoring_disabled():
-            base_config = self.config_manager.get_model_config(primary_name)
-            online_devices = set()
-            if base_config:
-                for val in base_config.values():
-                    if isinstance(val, dict) and "required_devices" in val:
-                        online_devices.update(val["required_devices"])
 
-        model_config = self.config_manager.get_adaptive_model_config(primary_name, online_devices)
-        if not model_config:
-            return False, "没有适合当前设备的配置方案"
+        try:
+            # 刷新设备状态缓存
+            if not self.config_manager.is_gpu_monitoring_disabled():
+                self.plugin_manager.update_device_status()
 
-        state['current_config'] = model_config
+            online_devices = self.plugin_manager.get_cached_online_devices()
 
-        # 资源检查与释放
-        if not self._check_and_free_resources(model_config):
-            return False, "设备资源不足且无法释放"
+            if self.config_manager.is_gpu_monitoring_disabled():
+                base_config = self.config_manager.get_model_config(primary_name)
+                online_devices = set()
+                if base_config:
+                    for val in base_config.values():
+                        if isinstance(val, dict) and "required_devices" in val:
+                            online_devices.update(val["required_devices"])
 
-        self.log_manager.prepare_model_log(primary_name)
+            # [Checkpoint 2] 设备检查后
+            if self._check_if_cancelled(primary_name):
+                return False, "启动中断（阶段2）"
 
-        with state['lock']:
-            state['status'] = ModelStatus.INIT_SCRIPT.value
-        
-        logger.info(f"正在启动: {primary_name} (方案: {model_config.get('config_source')})")
-        
-        project_root = os.path.dirname(os.path.abspath(self.config_manager.config_path))
-        
-        def output_callback(stream, msg):
-            prefix = "[ERR] " if stream == 'stderr' else ""
-            self.log_manager.add_console_log(primary_name, f"{prefix}{msg}")
+            model_config = self.config_manager.get_adaptive_model_config(primary_name, online_devices)
+            if not model_config:
+                error_msg = "没有适合当前设备的配置方案"
+                with state['lock']:
+                    state['status'] = ModelStatus.FAILED.value
+                    state['failure_reason'] = error_msg
+                return False, error_msg
 
-        success, msg, pid = self.process_manager.start_process(
-            name=f"model_{primary_name}",
-            command=model_config['script_path'], 
-            cwd=project_root,
-            shell=True, 
-            capture_output=True, 
-            output_callback=output_callback
-        )
+            state['current_config'] = model_config
 
-        if not success:
-            return False, msg
+            # 资源检查与释放
+            if not self._check_and_free_resources(model_config):
+                error_msg = "设备资源不足且无法释放"
+                with state['lock']:
+                    state['status'] = ModelStatus.FAILED.value
+                    state['failure_reason'] = error_msg
+                return False, error_msg
 
-        state['pid'] = pid
+            # [Checkpoint 3] 资源检查后
+            if self._check_if_cancelled(primary_name):
+                return False, "启动中断（阶段3）"
 
-        with state['lock']:
-            state['status'] = ModelStatus.HEALTH_CHECK.value
+            self.log_manager.prepare_model_log(primary_name)
 
-        return self._perform_health_checks(primary_name, model_config)
+            with state['lock']:
+                state['status'] = ModelStatus.INIT_SCRIPT.value
+
+            logger.info(f"正在启动: {primary_name} (方案: {model_config.get('config_source')})")
+
+            project_root = os.path.dirname(os.path.abspath(self.config_manager.config_path))
+
+            def output_callback(stream, msg):
+                self.log_manager.add_console_log(primary_name, msg)
+
+            # Windows 进程组标志
+            creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else None
+
+            success, msg, pid = self.process_manager.start_process(
+                name=f"model_{primary_name}",
+                command=model_config['script_path'],
+                cwd=project_root,
+                description=f"模型进程: {primary_name}",
+                shell=True,
+                creation_flags=creation_flags,
+                capture_output=True,
+                output_callback=output_callback
+            )
+
+            if not success:
+                with state['lock']:
+                    state['status'] = ModelStatus.FAILED.value
+                    state['failure_reason'] = msg
+                return False, f"进程启动失败: {msg}"
+
+            # [Checkpoint 4] 进程启动后立即检查
+            with state['lock']:
+                if state['status'] == ModelStatus.STOPPED.value:
+                    logger.warning(f"进程已启动(PID {pid})但收到停止请求，立即终止")
+                    self.process_manager.stop_process(f"model_{primary_name}", force=True)
+                    return False, "启动中断（进程已终止）"
+
+                state['pid'] = pid
+
+            # 健康检查
+            return self._perform_health_checks(primary_name, model_config)
+
+        except Exception as e:
+            logger.error(f"智能启动流程异常: {e}", exc_info=True)
+            with state['lock']:
+                state['status'] = ModelStatus.FAILED.value
+                state['failure_reason'] = str(e)
+            return False, f"启动异常: {e}"
 
     def _check_and_free_resources(self, model_config):
         if self.config_manager.is_gpu_monitoring_disabled():
             return True
 
         required_memory = model_config.get("memory_mb", {})
-        
+
         for attempt in range(2):
             device_status_map = self.plugin_manager.get_device_status_snapshot()
             resource_ok = True
@@ -317,19 +476,19 @@ class ModelController:
                 status = device_status_map.get(dev_name)
                 if not status or not status.get('online'):
                     resource_ok = False; break
-                
+
                 info = status.get('info')
                 available = info.get('available_memory_mb', 0) if info else 0
                 if available < req_mb:
                     deficit_devices[dev_name] = req_mb - available
                     resource_ok = False
-            
+
             if resource_ok: return True
 
             if attempt == 0:
                 if not self._stop_idle_models_for_resources(deficit_devices):
                     break
-                
+
                 logger.info("等待3秒让系统回收资源...")
                 time.sleep(3)
 
@@ -338,7 +497,7 @@ class ModelController:
                     self.plugin_manager.update_device_status()
                 except Exception as e:
                     logger.warning(f"强制刷新设备状态失败: {e}")
-        
+
         return False
 
     def _stop_idle_models_for_resources(self, deficit_devices) -> bool:
@@ -360,23 +519,23 @@ class ModelController:
                 if self.api_router and self.api_router.pending_requests.get(name, 0) > 0:
                     logger.debug(f"跳过模型 {name}: 有待处理请求")
                     continue
-                
+
                 current_config = state.get('current_config')
                 if not current_config:
                     continue
-                
+
                 # 3. 设备相关性检查
                 used_devices = set(current_config.get('required_devices', []))
                 if not used_devices:
                     used_devices = set(current_config.get('memory_mb', {}).keys())
-                
+
                 if used_devices.isdisjoint(set(deficit_devices.keys())):
                     continue
-                
+
                 # 4. 计算淘汰评分
                 last_access = state.get('last_access') or 0
                 idle_seconds = max(0, now - last_access)
-                
+
                 total_memory_mb = sum(current_config.get('memory_mb', {}).values())
                 memory_gb = total_memory_mb / 1024.0
                 # 设定0.5GB作为分母下限，防止除以极小值导致分数过大
@@ -385,7 +544,7 @@ class ModelController:
                 # 核心公式：显存越小、空闲越久，分数越高 -> 越容易被关闭
                 # 理念：保留大显存模型（重启慢），优先清理小模型
                 eviction_score = idle_seconds / memory_gb_for_score
-                
+
                 idle_candidates.append({
                     "name": name,
                     "score": eviction_score,
@@ -418,9 +577,22 @@ class ModelController:
             return False
 
     def _perform_health_checks(self, name, config):
+        # [Checkpoint 5] 健康检查前
+        if self._check_if_cancelled(name):
+            return False, "启动中断（健康检查前）"
+
+        state = self.models_state[name]
+        with state['lock']:
+            state['status'] = ModelStatus.HEALTH_CHECK.value
+
         interface = self.plugin_manager.get_interface_plugin(config.get("mode", "Chat"))
         if interface:
             success, msg = interface.health_check(name, config['port'])
+
+            # [Checkpoint 6] 健康检查后
+            if self._check_if_cancelled(name):
+                return False, "启动中断（健康检查后）"
+
             if success:
                 state = self.models_state[name]
                 with state['lock']:
@@ -432,58 +604,79 @@ class ModelController:
                 return False, msg
         return False, "No interface plugin"
 
-    def stop_model(self, primary_name: str) -> Tuple[bool, str]:
+    def stop_model(self, primary_name: str, refresh_cache: bool = True) -> Tuple[bool, str]:
+        """停止模型（支持中断启动中的模型）"""
         state = self.models_state[primary_name]
-        with state['lock']:
-            if state['status'] == ModelStatus.STOPPED.value:
-                return True, "Already stopped"
-            
-            state['status'] = ModelStatus.STOPPED.value
-            state['failure_reason'] = "User requested"
-            
-            pid = state.get('pid')
-            if pid:
-                self.process_manager.stop_process(f"model_{primary_name}", force=True)
-            
-            state['pid'] = None
-            state['current_config'] = None
 
-        # 停止后刷新设备状态缓存
-        logger.info(f"模型 '{primary_name}' 已停止，正在刷新设备状态缓存...")
-        self.plugin_manager.update_device_status()
+        logger.info(f"收到停止请求: {primary_name}")
+
+        # 1. 设置信号
+        with state['lock']:
+            current_status = state['status']
+            if current_status in [ModelStatus.STOPPED.value, ModelStatus.FAILED.value]:
+                return True, "模型已停止"
+
+            state['status'] = ModelStatus.STOPPED.value
+            state['failure_reason'] = "被用户请求停止"
+            pid = state.get('pid')
+
+        # 2. 终止进程
+        if pid:
+            self.process_manager.stop_process(f"model_{primary_name}", force=True)
+
+        # 3. 清理状态
+        with state['lock']:
+            self._reset_model_state(state)
+
+        # 4. 刷新设备缓存
+        if refresh_cache:
+            logger.info(f"模型 '{primary_name}' 已停止，正在刷新设备状态缓存...")
+            self.plugin_manager.update_device_status()
 
         return True, "Stopped"
 
     def unload_all_models(self):
-        """
-        卸载所有运行中的模型
-        [重构] 基于 stop_model 实现，避免代码重复，自动获得缓存刷新功能
-        """
-        logger.info("正在卸载所有运行中的模型...")
-        primary_names = list(self.models_state.keys())
+        """并行卸载所有运行中的模型"""
+        logger.info("开始卸载所有模型...")
+        models_to_stop = []
 
-        terminated_count = 0
-        failed_models = []
+        # 筛选运行中的模型（跳过已停止/失败的）
+        for name, state in self.models_state.items():
+            with state['lock']:
+                if state['status'] not in [ModelStatus.STOPPED.value, ModelStatus.FAILED.value]:
+                    models_to_stop.append(name)
 
-        # [优化] 直接调用 stop_model，复用其所有逻辑（包括缓存刷新）
-        for name in primary_names:
+        if not models_to_stop:
+            logger.info("无运行中的模型")
+            return 0
+
+        def stop_task(name):
             try:
-                success, message = self.stop_model(name)
-                if success:
-                    terminated_count += 1
-                    logger.debug(f"模型 '{name}' 已成功卸载")
-                else:
-                    logger.warning(f"模型 '{name}' 卸载失败: {message}")
-                    failed_models.append(name)
+                ok, msg = self.stop_model(name, refresh_cache=False)
+                return name, ok, msg
             except Exception as e:
-                logger.error(f"卸载模型 '{name}' 时发生异常: {e}")
-                failed_models.append(name)
+                return name, False, str(e)
 
-        logger.info(f"所有模型卸载完成，成功: {terminated_count}/{len(primary_names)}")
-        if failed_models:
-            logger.warning(f"以下模型卸载失败: {failed_models}")
+        futures = [self.executor.submit(stop_task, name) for name in models_to_stop]
+        stopped_count = 0
 
-        return terminated_count
+        timeout = len(models_to_stop) * 5 + 10
+        for future in concurrent.futures.as_completed(futures, timeout=timeout):
+            try:
+                name, ok, msg = future.result()
+                if ok:
+                    stopped_count += 1
+                else:
+                    logger.warning(f"卸载失败 [{name}]: {msg}")
+            except Exception as e:
+                logger.error(f"处理结果异常: {e}")
+
+        # 所有模型停止后，只刷新一次缓存
+        if stopped_count > 0:
+            self.plugin_manager.update_device_status()
+
+        logger.info(f"卸载完成: {stopped_count}/{len(models_to_stop)}")
+        return stopped_count
 
     def idle_check_loop(self):
         """
@@ -493,9 +686,9 @@ class ModelController:
             time.sleep(30)
             # 获取配置的存活时间（分钟 -> 秒）
             alive_time_min = self.config_manager.get_alive_time()
-            if alive_time_min <= 0: 
+            if alive_time_min <= 0:
                 continue
-            
+
             alive_time = alive_time_min * 60
             now = time.time()
             models_to_stop = []
@@ -506,7 +699,7 @@ class ModelController:
                 with state['lock']:
                     if state['status'] != ModelStatus.ROUTING.value:
                         continue
-                    
+
                     last_access = state.get('last_access')
                     if not last_access:
                         continue
@@ -519,7 +712,7 @@ class ModelController:
                     # 只有无请求且超时才标记
                     if pending_count == 0 and (now - last_access) > alive_time:
                         models_to_stop.append(name)
-            
+
             # 第二阶段：执行关闭（带最终确认）
             for name in models_to_stop:
                 # 【关键优化】在真正下刀之前，再次确认请求数
@@ -530,7 +723,7 @@ class ModelController:
                     if current_pending > 0:
                         logger.info(f"模型 {name} 在关闭前一刻收到新请求，取消关闭")
                         should_stop = False
-                
+
                 if should_stop:
                     logger.info(f"模型 {name} 空闲超时，正在关闭...")
                     self.stop_model(name)

@@ -139,3 +139,7 @@ class ConfigManager:
 
     def is_gpu_monitoring_disabled(self):
         return self.get_program_config().get('Disable_GPU_monitoring', False)
+
+    def is_auto_start(self, model_name: str) -> bool:
+        cfg = self.get_model_config(model_name)
+        return cfg.get("auto_start", False) if cfg else False
