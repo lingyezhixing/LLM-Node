@@ -1,0 +1,22 @@
+# 构建上下文瘦身:镜像只需 pyproject/src(装 Python 依赖)。
+# 运行时 config.yaml/logs/Model_startup_script 由卷挂载提供,不进镜像。
+.git
+tests
+logs
+Model_startup_script
+.claude
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.venv
+venv
+*.egg-info
+*.code-workspace
+*.bat
+Dockerfile
+Dockerfile.example
+docker-compose.yml
+docker-compose.yml.example
+.dockerignore

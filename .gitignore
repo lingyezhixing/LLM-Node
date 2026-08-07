@@ -8,9 +8,8 @@
 *.exe
 
 # 忽略构建目录
-/build/
-/dist/
 build/
+/dist/
 
 # 忽略 setuptools 构建产物与可编辑安装的 egg-info/egg-link
 *.egg-info/
@@ -46,6 +45,11 @@ __pycache__/
 *.pyd
 .Python
 
+# 忽略测试与静态检查缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # 忽略虚拟环境
 venv/
 env/
@@ -79,9 +83,6 @@ API_DOCUMENTATION.md
 *.db
 *.sqlite
 *.sqlite3
-**/*.db
-**/*.sqlite
-**/*.sqlite3
 *.db-shm
 *.db-wal
 
@@ -98,3 +99,8 @@ models/
 
 # 忽略模型启动脚本目录(用户本地产物)
 Model_startup_script/
+
+# Docker 实际使用文件:由 example 复制而来(cp Dockerfile.example Dockerfile),
+# 可随意修改不影响 git;example 模板本身入库追踪
+Dockerfile
+docker-compose.yml

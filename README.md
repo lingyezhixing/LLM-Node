@@ -90,7 +90,12 @@ python main.py
 ```
 
 #### 方式 B: Docker Compose
+仓库只提供样板(`Dockerfile.example` / `docker-compose.yml.example`),实际部署文件
+由本地复制生成,可随意修改而不影响 git:
 ```bash
+cp Dockerfile.example Dockerfile
+cp docker-compose.yml.example docker-compose.yml
+# 按需编辑 docker-compose.yml(端口/设备/外部网络等),然后:
 docker-compose up -d
 ```
 

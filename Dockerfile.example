@@ -1,0 +1,48 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONUTF8=1
+
+# 1. [可选] 替换 APT 源为清华(国内加速;海外/内网部署可删除)
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/security.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources
+
+# 2. 系统依赖:--no-install-recommends 最小化安装
+#    intel-gpu-tools 提供 intel_gpu_top(i915 监控用);spirv-headers 供 llama.cpp/GLSL 构建。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libopenblas0 \
+    mesa-vulkan-drivers \
+    libvulkan1 \
+    libvulkan-dev \
+    spirv-headers \
+    glslc \
+    cmake \
+    build-essential \
+    ccache \
+    git \
+    intel-gpu-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 3. Python 依赖:构建时装进镜像,运行时挂载的代码覆盖 /app 但不影响已装依赖。
+#    仅装核心 6 项:monitoring(pythonnet)为 Windows 专用,不进容器。
+#    (pip 源清华;海外部署可换官方源)
+COPY . /app
+RUN pip install --no-cache-dir -e . -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/
+
+# 4. 启动入口:自动修复模型启动脚本(CRLF→LF + chmod +x,Windows 编辑过的 .sh 必需),
+#    再 exec 透传 CMD。compose 的 restart: unless-stopped 兜底进程崩溃。
+RUN echo '#!/bin/bash\n\
+if [ -d "Model_startup_script" ]; then\n\
+    echo ">>> checking and fixing model startup scripts..."\n\
+    find Model_startup_script -name "*.sh" -exec sed -i "s/\r$//" {} \;\n\
+    find Model_startup_script -name "*.sh" -exec chmod +x {} \;\n\
+fi\n\
+echo ">>> Starting LLM-Node..."\n\
+exec "$@"' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["python", "-m", "llm_node"]
