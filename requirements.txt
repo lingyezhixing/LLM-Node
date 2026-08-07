@@ -1,12 +1,8 @@
-# 核心依赖
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pyyaml
-
-# HTTP客户端
-httpx>=0.25.0
-openai>=1.0.0
-
-# 系统监控
-psutil>=5.9.0
-GPUtil>=1.4.0
+# 依赖以 pyproject.toml 为唯一来源(核心 6 项 + extras)。
+# 本文件仅为兼容 `pip install -r requirements.txt` 习惯保留。
+#
+# 仅运行(NVIDIA nvidia-smi 默认可用;AMD 780M / Windows 核显监控需 monitoring):
+-e .[monitoring]
+#
+# 开发 / 测试(pytest + pytest-asyncio + ruff + pyright):
+#   pip install -e ".[monitoring,dev]"

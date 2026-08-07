@@ -25,8 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 3. 安装 Python 依赖
-COPY requirements.txt .
+# 3. 安装 Python 依赖(editable install 需要 pyproject + 源码)
+COPY pyproject.toml requirements.txt ./
+COPY src ./src
 RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
 # 4. 启动脚本（自动配置 Git 代理 + 权限修复）

@@ -2,7 +2,9 @@
 
 **LLM-Node** 是一个轻量级、无状态的本地 LLM 计算节点服务。
 
-本项目是从 **LLM-Manager** 项目中剥离出的独立分支。它保留了核心的模型进程管理、硬件资源调度和统一 API 路由功能，但移除了所有前端界面 (WebUI)、数据库依赖和计费统计模块。旨在作为一个纯粹的后端服务或集群中的计算节点运行，支持 Docker 部署。
+本项目是从 **LLM-Manager** 项目中剥离出的独立分支，并在 2026-08 依据完全重构后的
+LLM-Manager v3 架构重写。它保留了核心的模型进程管理、硬件资源调度和统一 API 路由，
+移除了 WebUI、SQLite 数据库、计费/用量模块和系统托盘，作为纯粹的后端计算节点运行。
 
 > **⚠️ 说明**：
 > 本项目为个人开发工具，主要用于构建无头（Headless）推理环境。
@@ -12,54 +14,79 @@
 
 ## 核心特性
 
-1.  **纯后端运行**：无 GUI、无系统托盘，专为服务器和容器环境设计。
-2.  **无状态架构**：移除 SQLite 数据库依赖，仅保留文件日志，启动即用，无历史负担。
-3.  **统一接口**：提供兼容 OpenAI 格式的 API 入口，自动路由至后端模型端口。
-4.  **按需调度**：保留了完整的进程管理逻辑，支持请求触发启动和空闲自动关闭。
-5.  **容器化支持**：原生支持 Docker 和 Docker Compose 部署。
-6.  **配置升级**：采用更易读的 YAML 格式进行配置管理。
+1. **纯后端运行**：无 GUI、无系统托盘，专为服务器和容器环境设计。
+2. **无状态架构**：无数据库依赖，配置走 YAML，启动即用，无历史负担。
+3. **统一接口**：提供兼容 OpenAI 格式的 API 入口，自动路由至后端模型端口。
+4. **按需调度**：请求触发启动 + 空闲自动关闭 + 显存不足时动态驱逐（对齐 Manager v3 逻辑）。
+5. **并发安全**：单派发 Future 去重 + 全局 spawn 锁 + owner-token guard。
+6. **健康探测**：按模式（Chat / Embedding / Reranker）两阶段探测（浅层 /v1/models + 深层请求）。
+7. **设备监控**：nvidia-smi（NVIDIA）、amdgpu sysfs / LHM（AMD）、i915 + intel_gpu_top / LHM（Intel）、psutil（CPU），模糊匹配设备名。
+8. **结构化启动**：YAML 中每个 scheme 定义 `script_path`（.bat/.sh），支持 `{{port}}` / `{{alias}}` 变量替换。
+9. **容器化支持**：原生支持 Docker 和 Docker Compose 部署。
+
+---
+
+## 架构
+
+```
+config     ── YAML → frozen dataclasses + 校验(无 DB;config_store 读穿快照)
+state      ── 内存状态机 + 单派发 inflight Future + activity
+supervisor ── 子进程管理(kill_tree + 单 wait 协程 + 输出泵线程)
+runtime    ── lifecycle(启动/停止 pipeline + 协作式中断)/ scheduling(纯函数资源决策)/ background(空闲回收 + 自动启动)
+devices    ── DeviceMonitor + 4 平台适配器(NVIDIA/AMD/Intel/CPU)
+gateway    ── OpenAI 兼容代理 catch-all + 管理 API + 别名解析
+model_log  ── 模型输出文件日志(无 DB,每模型保留最新 10 个文件)
+```
+
+- **单进程模型**：一个 Python 进程跑一个 app（FastAPI + uvicorn），模块级单例内存状态。
+- **配置单一源**：`config.yaml`，运行时只读 frozen 快照；编辑后 `ConfigStore.reload()` 即时生效（读穿）。
+- **无状态**：不落任何数据库，无计费，无 WebUI。模型 stdout/stderr 仅落文件日志。
 
 ---
 
 ## 快速开始
 
 ### 1. 环境准备
-*   Python 3.10+
-*   或者 Docker 环境
+*   Python 3.11+
+*   或 Docker 环境
 
-### 2. 配置文件 (`config.yaml`)
-LLM-Node 仅需要极简的配置。请复制 `config.example.yaml` 为 `config.yaml`：
+### 2. 安装
+```bash
+# 仅运行(NVIDIA nvidia-smi 默认可用;AMD/Intel 核显监控需 monitoring)
+pip install -e ".[monitoring]"
+# 开发 / 测试
+pip install -e ".[monitoring,dev]"
+```
 
+### 3. 配置文件 (`config.yaml`)
 ```yaml
 program:
   host: "0.0.0.0"
   port: 8080
+  alive_time: 60            # 模型空闲自动关闭时间（分钟）;<=0 禁用
   log_level: "INFO"
-  alive_time: 30          # 模型空闲自动关闭时间（分钟）
-  # device_plugin_dir: "plugins/devices" # 可选：指定插件目录
 
 Local-Models:
-  # 模型配置示例
   Qwen-14B:
-    aliases: ["qwen-14b", "gpt-3.5-turbo"]
-    mode: "Chat"
+    aliases: ["qwen-14b", "gpt-3.5-turbo"]  # aliases[0]=下游 served name
+    mode: "Chat"                            # Chat / Embedding / Reranker
     port: 10001
     auto_start: false
-    
-    # 硬件配置方案
-    Standard-Config:
+
+    Standard-Config:                        # scheme 名,按设备顺序回退
       required_devices: ["rtx 4060"]
-      script_path: "scripts/run_qwen.bat" # Linux下请填写 .sh 路径
-      memory_mb:
-        "rtx 4060": 12000
+      script_path: "scripts/run_qwen.bat"    # Linux 下填 .sh
+      memory_mb: {"rtx 4060": 12000}
 ```
 
-### 3. 运行方式
+> ✅ **说明**：设备不满足前一个 scheme 时自动回退到下一个（多 GPU 启动灵活性）。
+
+### 4. 运行方式
 
 #### 方式 A: 直接运行 (Python)
 ```bash
-pip install -r requirements.txt
 python main.py
+# 或:python -m llm_node
 ```
 
 #### 方式 B: Docker Compose
@@ -71,8 +98,6 @@ docker-compose up -d
 
 ## API 接口说明
 
-LLM-Node 仅保留了最核心的模型控制接口：
-
 *   **业务接口**:
     *   `/v1/chat/completions`: 对话补全 (自动路由)
     *   `/v1/embeddings`: 向量嵌入 (自动路由)
@@ -82,53 +107,36 @@ LLM-Node 仅保留了最核心的模型控制接口：
 *   **管理接口**:
     *   `POST /api/models/{alias}/start`: 预热/启动模型
     *   `POST /api/models/{alias}/stop`: 停止模型
+    *   `POST /api/models/{alias}/restart`: 重启模型
     *   `POST /api/models/stop-all`: 停止所有模型
+    *   `GET /api/models`: 列出模型及运行状态
     *   `GET /api/models/{alias}/info`: 获取模型运行状态
     *   `GET /api/health`: 节点健康检查
 
 ---
 
+## 开发
+
+后端（项目根）：
+```bash
+python -m pytest tests -q     # 全量测试
+ruff format --check .         # 格式
+ruff check .                  # lint
+python -m pyright src/llm_node  # 类型检查
+```
+
+---
+
 ## 更新日志 (Changelog)
 
-### v1.2.0 - 2026-04-30
-**健壮性增强 - 对齐主项目核心逻辑**
-*   **Checkpoint 中断机制**：在模型启动流程的 6 个关键阶段插入中断检查点，支持在启动过程中即时停止模型（此前需等待健康检查超时，最坏 300 秒）。
-*   **自动启动**：服务启动时自动并行加载 `auto_start: true` 的模型，消除首次请求冷启动延迟。
-*   **并行卸载**：`stop-all` 从串行改为并行执行，全部完成后只刷新一次设备缓存，大幅缩短关闭时间。
-*   **Windows 进程组**：启动模型时添加 `CREATE_NEW_PROCESS_GROUP` 标志，改善进程树管理。
-*   **状态重置**：统一 `_reset_model_state()` 逻辑，确保停止后完整清理所有状态字段。
-
-### v1.1.0 - 2026-01-04
-**功能性更新 - 按需监控机制优化**
-*   **性能优化**：实现按需监控机制，消除常驻轮询，大幅降低空闲功耗。
-*   **按需监控**：设备监控仅在 API 请求时启动，10 秒无请求后自动停止。
-*   **缓存刷新**：启动/停止模型后自动刷新设备状态缓存，确保资源信息准确。
-*   **代码重构**：重构 `unload_all_models()` 基于 `stop_model()` 实现，代码更简洁。
-*   **监控优化**：监控频率优化为 1 秒轮询但带时间限制，总体负载更低。
-
-### v1.0.4 - 2025-12-18
-**稳定性修复**
-*   **空闲检查修复**：修复了空闲检查时间不更新导致的意外关闭问题。
-*   **关闭逻辑升级**：升级了关闭模型的逻辑，采用动态加权实现更精细的控制。
-
-### v1.0.3 - 2025-12-03
-**稳定性修复**
-*   **并发启动修复**：修复了高并发请求（如 30+ QPS）触发模型冷启动时，导致线程池耗尽（Thread Pool Starvation）从而引发节点假死的问题。
-*   **并发优化**：在 Router 层引入本地异步锁，优化了并发启动逻辑。
-
-### v1.0.2 - 2025-11-23 (晚间)
-**配置与容器化升级**
-*   **配置迁移**：将配置文件从 JSON 全面迁移至 YAML 格式，提升可读性。
-*   **Docker 支持**：完善了 `Dockerfile` 和 `docker-compose.yml`，支持一键部署。
-*   **接口精简**：移除了与 WebUI 相关的所有端口映射和冗余接口，仅保留核心管理 API。
-
-### v1.0.1 - 2025-11-23 (下午)
-**清理与适配**
-*   **代码剥离**：移除了 WebUI 构建文件、数据库监控模块和 GPU 插件中不必要的依赖。
-*   **依赖修正**：修复了因环境剥离导致的库缺失问题。
-*   **兼容性**：修复了 Windows 路径字符导致的编码错误，初步尝试 Linux 路径适配。
-
-### v1.0.0 - 2025-11-23 (初始版本)
-**项目独立**
-*   **Fork/Split**：从 LLM-Manager 项目（模型管理器重构后版本）正式剥离。
-*   **初始化**：确立无状态节点架构，规范化日志记录格式。
+### v2.0.0 - 2026-08-07
+**依据重构后的 LLM-Manager v3 架构重写**
+*   **架构对齐**：采用与 Manager v3 相同的分层结构（config/state/supervisor/runtime/devices/gateway），
+    保留无状态定位（无 DB、无计费、无 WebUI、无托盘）。
+*   **生命周期**：移植单派发 + 全局 spawn 锁 + owner-token guard + 协作式中断 + 崩溃恢复 + reconcile 兜底。
+*   **设备监控**：移植 DeviceMonitor + 四平台适配器（nvidia-smi / amdgpu+LHM / i915+intel_gpu_top / psutil）。
+*   **调度**：移植纯函数 scheduling（显存 deficit 计算 + 空闲/显存加权驱逐）。
+*   **健康探测**：移植两阶段 probe（浅层 /v1/models + 深层按模式请求）。
+*   **代理转发**：移植 OpenAI 兼容 catch-all 代理，剥离 token 计量。
+*   **模型日志**：模型 stdout/stderr 落文件日志（`logs/model_logs/<model>/`，每模型保留 10 个文件），替代原 DB 日志。
+*   **测试**：移植核心单测（config/state/supervisor/probes/devices/scheduling/background/lifecycle/proxy/routes/api）+ smoke，226 项。

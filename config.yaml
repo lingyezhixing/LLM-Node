@@ -2,25 +2,18 @@ program:
   host: "0.0.0.0"
   port: 8080
   alive_time: 60
-  Disable_GPU_monitoring: false
-  device_plugin_dir: "plugins/devices"
-  interface_plugin_dir: "plugins/interfaces"
   log_level: "INFO"
-  TokenTracker:
-    - "Chat"
-    - "Base"
-    - "Embedding"
-    - "Reranker"
 
-jina-code-embeddings:
-  aliases:
-    - "jina-code-embeddings"
-  mode: "Embedding"
-  port: 10001
-  auto_start: false
-  CPU:
-    required_devices:
-      - "CPU"
-    script_path: "Model_startup_script/jina-code-embeddings.sh"
-    memory_mb:
-      CPU: 2048
+Local-Models:
+  jina-code-embeddings:
+    aliases:
+      - "jina-code-embeddings"
+    mode: "Embedding"
+    port: 10001
+    auto_start: false
+    CPU:
+      required_devices:
+        - "CPU"
+      script_path: "Model_startup_script/jina-code-embeddings.sh"
+      memory_mb:
+        CPU: 2048

@@ -1,38 +1,25 @@
 # 忽略日志文件
 *.log
 
-# 忽略可执行文件
-*.exe
-
-# 忽略动态链接库
-*.dll
-
-# 忽略构建目录
-/build/
-
 # 忽略日志目录
 /logs/
 
-# 忽略整个backend文件夹
-/backend/
+# 忽略可执行文件
+*.exe
 
-# 忽略Model_startup_script文件夹
-/Model_startup_script/
+# 忽略构建目录
+/build/
+/dist/
+build/
 
-# 忽略src文件夹
-/src/
+# 忽略 setuptools 构建产物与可编辑安装的 egg-info/egg-link
+*.egg-info/
+*.egg-link
 
-# 忽略config.json文件
-/config.json
-
-# 忽略数据库文件
-/webui/monitoring.db
-
-# 忽略CMake相关文件
+# 忽略 CMake 相关文件
 CMakeFiles/
 CMakeCache.txt
 CMakeOutput.log
-CMakeFiles/
 *.cmake
 
 # 忽略编译器生成的文件
@@ -41,7 +28,7 @@ CMakeFiles/
 *.so
 *.dylib
 
-# 忽略IDE相关文件
+# 忽略 IDE 相关文件
 .vscode/
 .idea/
 *.swp
@@ -52,7 +39,7 @@ CMakeFiles/
 Thumbs.db
 .DS_Store
 
-# 忽略Python缓存
+# 忽略 Python 缓存
 __pycache__/
 *.pyc
 *.pyo
@@ -64,7 +51,7 @@ venv/
 env/
 .venv/
 
-# 忽略Node.js相关文件
+# 忽略 Node.js 相关文件
 node_modules/
 
 # 忽略其他临时文件
@@ -75,18 +62,13 @@ node_modules/
 .env
 .config
 
-# 忽略VS Code工作区文件
+# 忽略 VS Code 工作区文件
 LLM-Node.code-workspace
 
-# 忽略Claude Code相关文件
+# 忽略 Claude Code 相关文件
 .claude/
 
-# 忽略所有包含test的文件和文件夹
-*test*
-**/*test*/
-**/test_*
-
-# 忽略指定的markdown文档
+# 忽略指定的 markdown 文档
 monitor_manual.md
 openai_api_manual.md
 data_manager（数据管理器）使用说明.md
@@ -100,14 +82,19 @@ API_DOCUMENTATION.md
 **/*.db
 **/*.sqlite
 **/*.sqlite3
+*.db-shm
+*.db-wal
 
 # 忽略代码统计工具
 quick_stats.py
 QUICK_STATS_README.md
 
-# 忽略AI上下文生成器
+# 忽略 AI 上下文生成器
 generate_ai_context.py
 node_context.md
 
 # 忽略整个 models 目录及其内容
 models/
+
+# 忽略模型启动脚本目录(用户本地产物)
+Model_startup_script/
