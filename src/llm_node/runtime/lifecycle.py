@@ -165,6 +165,10 @@ class Lifecycle:
 
             # 脚本路径变量替换({{port}}/{{alias}});无占位符原样。
             script = substitute_vars(scheme.script_path, model)
+            if os.name == "nt":
+                # cmd /c 不认正斜杠路径('Model_startup_script/x.bat' 会解析成命令失败),
+                # 归一化为反斜杠使批处理可被找到;POSIX 不做处理.
+                script = os.path.normpath(script)
             env = {**os.environ}
             rec = await self._supervisor.spawn(
                 script,

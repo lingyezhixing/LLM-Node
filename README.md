@@ -59,27 +59,18 @@ pip install -e ".[monitoring,dev]"
 ```
 
 ### 3. 配置文件 (`config.yaml`)
-```yaml
-program:
-  host: "0.0.0.0"
-  port: 8080
-  alive_time: 60            # 模型空闲自动关闭时间（分钟）;<=0 禁用
-  log_level: "INFO"
-
-Local-Models:
-  Qwen-14B:
-    aliases: ["qwen-14b", "gpt-3.5-turbo"]  # aliases[0]=下游 served name
-    mode: "Chat"                            # Chat / Embedding / Reranker
-    port: 10001
-    auto_start: false
-
-    Standard-Config:                        # scheme 名,按设备顺序回退
-      required_devices: ["rtx 4060"]
-      script_path: "scripts/run_qwen.bat"    # Linux 下填 .sh
-      memory_mb: {"rtx 4060": 12000}
+仓库只提供样板 `config.yaml.example`,实际配置文件由本地复制生成,按本机硬件/模型
+路径修改,可随意调整而不影响 git:
+```bash
+cp config.yaml.example config.yaml
+# 编辑 config.yaml(模型/端口/脚本路径),然后运行
 ```
-
-> ✅ **说明**：设备不满足前一个 scheme 时自动回退到下一个（多 GPU 启动灵活性）。
+关键字段:
+- `aliases[0]` = 下游 served name(客户端调用名)
+- `mode` ∈ `Chat` / `Embedding` / `Reranker`(决定健康探测方式)
+- `script_path` 支持 `{{port}}` / `{{alias}}` 变量替换;Windows 填 `.bat`,Linux 填 `.sh`
+- `memory_mb` 用于显存 deficit 计算与驱逐决策,需如实填写
+- 设备不满足前一个 scheme 时自动回退到下一个(多 GPU 启动灵活性)
 
 ### 4. 运行方式
 

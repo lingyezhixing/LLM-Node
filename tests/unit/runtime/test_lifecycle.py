@@ -583,3 +583,49 @@ async def test_pipeline_substitutes_vars_in_script_path():
     life, sup, _, _ = _make(models=[m])
     await life.ensure_running("m1")
     assert sup.spawned[0][0] == "run_12345_m1-served.sh"
+
+
+async def test_pipeline_normalizes_script_path_on_windows(monkeypatch):
+    import os as _os
+
+    m = ModelConfig(
+        primary_name="m1",
+        aliases=("m1",),
+        mode="Chat",
+        port=1000,
+        schemes={
+            "s": Scheme(
+                "s",
+                frozenset({"rtx 4060"}),
+                script_path="Model_startup_script/run.bat",
+                memory_mb={"rtx 4060": 2048},
+            )
+        },
+    )
+    monkeypatch.setattr(_os, "name", "nt")
+    life, sup, _, _ = _make(models=[m])
+    await life.ensure_running("m1")
+    assert sup.spawned[0][0] == _os.path.normpath("Model_startup_script/run.bat")
+
+
+async def test_pipeline_keeps_script_path_on_posix(monkeypatch):
+    import os as _os
+
+    m = ModelConfig(
+        primary_name="m1",
+        aliases=("m1",),
+        mode="Chat",
+        port=1000,
+        schemes={
+            "s": Scheme(
+                "s",
+                frozenset({"rtx 4060"}),
+                script_path="Model_startup_script/run.sh",
+                memory_mb={"rtx 4060": 2048},
+            )
+        },
+    )
+    monkeypatch.setattr(_os, "name", "posix")
+    life, sup, _, _ = _make(models=[m])
+    await life.ensure_running("m1")
+    assert sup.spawned[0][0] == "Model_startup_script/run.sh"

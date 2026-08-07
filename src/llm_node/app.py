@@ -57,7 +57,6 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.config_store = store
         app.state.monitor = monitor
         app.state.clients = clients
         app.state.lifecycle = lifecycle
@@ -97,6 +96,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
                 await client.aclose()
 
     app = FastAPI(title="LLM-Node", lifespan=lifespan)
+    app.state.config_store = store  # 构建期设置:run() 无需等 lifespan 即可读快照
     register_routes(app, lifecycle, clients)
     return app
 

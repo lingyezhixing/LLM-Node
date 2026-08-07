@@ -100,7 +100,8 @@ models/
 # 忽略模型启动脚本目录(用户本地产物)
 Model_startup_script/
 
-# Docker 实际使用文件:由 example 复制而来(cp Dockerfile.example Dockerfile),
-# 可随意修改不影响 git;example 模板本身入库追踪
+# 实际使用文件:由 example 复制而来(cp xxx.example xxx),可随意修改不影响 git;
+# example 模板本身入库追踪
+config.yaml
 Dockerfile
 docker-compose.yml

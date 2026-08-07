@@ -4,6 +4,8 @@
 tests
 logs
 Model_startup_script
+config.yaml
+config.yaml.example
 .claude
 __pycache__
 *.pyc

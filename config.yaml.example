@@ -1,0 +1,63 @@
+# LLM-Node 配置模板。实际使用文件由本地复制生成(cp config.yaml.example config.yaml),
+# 按本机硬件/模型路径修改,可随意调整而不影响 git。
+
+program:
+  host: "0.0.0.0"          # 监听地址
+  port: 8080                # 节点管理/代理端口
+  alive_time: 60            # 模型空闲自动关闭时间(分钟);<=0 禁用
+  log_level: "INFO"
+
+Local-Models:
+  # 每个模型一个键(primary_name,内部标识)。字段说明见下方注释。
+  #
+  # aliases[0] = 下游 served name(客户端调用名,如 lmdeploy --model-name / llama.cpp -a);
+  # mode  ∈ Chat / Embedding / Reranker(决定健康探测方式);
+  # scheme 名任意,按顺序回退:required_devices ⊆ 在线设备才选中,
+  #       多个 scheme 提供多 GPU 启动灵活性(如 GPU 版 + CPU 版)。
+  #
+  # script_path 支持变量替换:{{port}} → 模型端口,{{alias}} → aliases[0]。
+  #   Windows 用 .bat;Linux 用 .sh(容器内需 LF 换行)。
+  # memory_mb 键=设备名(与 required_devices 相同命名),值=该设备显存占用(MB),
+  #   用于显存 deficit 计算与驱逐决策,需如实填写。
+
+  # 示例 1:llama.cpp 直接启动(Chat)
+  Qwen3.5-2B:
+    aliases:
+      - "Qwen3.5-2B"
+    mode: "Chat"
+    port: 10004
+    auto_start: false
+    RTX4060:
+      required_devices:
+        - "rtx 4060"
+      script_path: "Model_startup_script/qwen35-2b.bat"
+      memory_mb:
+        "rtx 4060": 2048
+
+  # 示例 2:lmdeploy(conda 环境)启动(Embedding);Reranker 同理只是 mode/脚本不同
+  Qwen3-Embedding-4B-AWQ:
+    aliases:
+      - "Qwen3-Embedding-4B"
+    mode: "Embedding"
+    port: 10002
+    auto_start: false
+    RTX4060:
+      required_devices:
+        - "rtx 4060"
+      script_path: "Model_startup_script/qwen3-embedding-4b.bat"
+      memory_mb:
+        "rtx 4060": 5120
+
+  # 示例 3:同一模型多 scheme 回退(优先级=配置顺序)
+  # Example-Model:
+  #   aliases: ["example"]
+  #   mode: "Chat"
+  #   port: 10099
+  #   GPU:
+  #     required_devices: ["rtx 4060"]
+  #     script_path: "Model_startup_script/example-gpu.bat"
+  #     memory_mb: {"rtx 4060": 4096}
+  #   CPU:
+  #     required_devices: ["CPU"]
+  #     script_path: "Model_startup_script/example-cpu.bat"
+  #     memory_mb: {"CPU": 8192}
